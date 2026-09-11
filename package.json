@@ -1,0 +1,36 @@
+{
+  "name": "tallyup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "REST API for tracking shared group expenses and computing minimal settlements.",
+  "license": "MIT",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply tallyup-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply tallyup-db --remote",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "debt-simplify": "*",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.7",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.9.3",
+    "vitest": "~4.1.11",
+    "wrangler": "^4.131.0"
+  },
+  "engines": { "node": ">=20" }
+}

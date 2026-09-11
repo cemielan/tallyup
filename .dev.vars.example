@@ -1,0 +1,9 @@
+# Copy to .dev.vars (gitignored) and fill in real local values.
+#   cp .dev.vars.example .dev.vars
+#
+# Generate a signing secret (>=256 bits, SECURITY §2):
+#   openssl rand -base64 32
+#
+# Use a DIFFERENT secret here than in production (SECURITY §7) so a leaked
+# local secret cannot mint tokens against the deployed API.
+JWT_SECRET="replace-me-with-openssl-rand-base64-32-output"

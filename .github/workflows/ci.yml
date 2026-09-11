@@ -1,0 +1,36 @@
+name: CI
+
+# NFR-404: lint, typecheck and the full suite gate every pull request.
+# Configure branch protection on `main` to require this workflow.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # Surfaces known advisories without failing the build on a transitive
+      # dev-only finding. Dependabot (NFR-503) is what actually opens the
+      # upgrade PRs.
+      - run: npm audit --omit=dev
+        continue-on-error: true

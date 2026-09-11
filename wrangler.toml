@@ -1,0 +1,47 @@
+# Cloudflare Workers configuration.
+#
+# Secrets NEVER live in this file (SECURITY §7). Local dev reads them from
+# .dev.vars (gitignored); production uses `wrangler secret put`.
+
+name = "tallyup"
+main = "src/index.ts"
+# Pinned to the newest date the workerd bundled with the test runner accepts,
+# so `npm test` and `wrangler deploy` agree on runtime behavior. Raise it
+# only after the Vitest pool ships a workerd that supports the newer date.
+compatibility_date = "2026-08-22"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# Non-secret configuration. Override per environment.
+[vars]
+ENVIRONMENT = "development"
+# Comma-separated CORS allow-list. Never "*" for authenticated routes
+# (SECURITY §6). Set the real origins of whatever frontend calls this.
+CORS_ORIGINS = "http://localhost:5173,http://localhost:3000"
+# PBKDF2 iteration count for new password hashes. Existing hashes carry
+# their own count, so raising this is safe and applies on next password
+# write. Benchmark against the CPU budget before changing (SECURITY §2).
+PBKDF2_ITERATIONS = "100000"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tallyup-db"
+# Run `wrangler d1 create tallyup-db` and paste the returned id here.
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[env.production]
+name = "tallyup"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+CORS_ORIGINS = "https://REPLACE_WITH_YOUR_FRONTEND_ORIGIN"
+PBKDF2_ITERATIONS = "100000"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "tallyup-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"

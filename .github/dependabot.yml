@@ -1,0 +1,19 @@
+# NFR-503: dependency vulnerability scanning, free for public repositories.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine patch bumps keeps the review load sane; anything
+      # major still arrives on its own so it gets read properly.
+      dev-dependencies:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

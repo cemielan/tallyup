@@ -1,0 +1,11 @@
+{
+  "name": "debt-simplify",
+  "version": "0.0.0-local-placeholder",
+  "description": "LOCAL PLACEHOLDER. Replace with the published debt-simplify package (see README).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "sideEffects": false,
+  "license": "MIT"
+}
