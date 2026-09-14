@@ -41,6 +41,7 @@ persistence, auth, HTTP.
 | Validation | Zod (also the source of the OpenAPI document) |
 | Auth | JWT access tokens + opaque rotating refresh tokens, WebCrypto only |
 | Tests | Vitest running inside the Workers runtime |
+| Web client | Vanilla JS + JSDoc types, served as static assets by the same Worker — no build step |
 
 ## Quick start
 
@@ -69,9 +70,50 @@ npm test                  # runs inside the real Workers runtime
 Full setup, production deployment, backups and rollback:
 [`docs/06-DEPLOYMENT.md`](docs/06-DEPLOYMENT.md).
 
-Interactive API reference once running: <http://localhost:8787/docs>
-(the raw document is at `/v1/openapi.json`, generated from the same Zod
-schemas the routes validate with).
+Three things are served once it is running:
+
+| URL | What it is |
+|---|---|
+| <http://localhost:8787/> | **The web client** — a working app: sign in, create groups, add expenses, settle up |
+| <http://localhost:8787/docs> | Interactive API reference (Scalar), generated from the Zod schemas |
+| <http://localhost:8787/v1/openapi.json> | The raw OpenAPI document |
+
+## The web client
+
+`web/` is a reference consumer of this API — the "any frontend can be built
+against it" claim, demonstrated rather than asserted. It covers every
+endpoint: registration and sign-in with silent token refresh, groups, invite
+codes and rotation, expenses in all four split types with a live-validating
+split editor, per-currency balances, suggested settlements, and the
+propose/confirm/decline cycle.
+
+It is **served by the same Worker** as the API, as static assets. Three
+things follow from that, all of them deliberate:
+
+- **Same origin**, so the browser never makes a cross-origin request and no
+  CORS configuration is involved. `CORS_ORIGINS` exists for third-party
+  clients, not for this one.
+- **Static asset requests are free** and do not count against the Worker's
+  request budget.
+- **One deploy.** `wrangler deploy` ships the API and the client together.
+
+There is **no build step**. The browser runs exactly the JavaScript that is
+in the repo — no bundler, no transpile, nothing in CI that can break between
+source and what ships. Types are not sacrificed for that: the client is
+plain JavaScript annotated with JSDoc and type-checked by
+`tsc --checkJs` (`npm run typecheck` covers it).
+
+Routing uses `#/...` fragments rather than real paths. A History-API router
+would need a server-side catch-all rewrite, and that rewrite would also
+swallow a mistyped `/v1/...` into the app instead of returning a clean 404
+to an API client.
+
+**One honest limitation:** the API is a pure bearer-token API with no cookie
+session, so the client keeps its tokens in `sessionStorage` where page
+JavaScript can read them. That is fine for a reference client and would not
+be fine for a deployment holding real financial relationships — fixing it
+means adding a cookie-based session endpoint to the API, which is a
+deliberate scope change, not an oversight.
 
 ## A full flow, end to end
 
@@ -186,6 +228,13 @@ the arithmetic works (FR-501).
 ## Layout
 
 ```
+web/              reference web client (static assets, no build step)
+  index.html      app shell
+  styles.css      design tokens, light and dark, responsive
+  js/api.js       API client: auth, token refresh, error envelope
+  js/ui.js        DOM helper, exact money conversion, toasts, dialogs
+  js/view-*.js    one file per screen
+  js/expense-form.js  the split editor, all four split types
 src/
   index.ts        app wiring: CORS, security headers, body limit, error envelope
   middleware.ts   auth, rate limiting, group membership and role checks

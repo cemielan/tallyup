@@ -19,5 +19,10 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "packages/**/*.ts", "*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "packages/**/*.ts"],
+  // vitest.config.ts and drizzle.config.ts run under Node, not the
+  // Workers runtime. Checking them against Workers types would demand
+  // @types/node here, which would in turn let Node globals typecheck
+  // inside Worker code that cannot run them.
+  "exclude": ["node_modules", "web"]
 }

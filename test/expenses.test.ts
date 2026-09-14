@@ -169,7 +169,7 @@ describe('editing and deleting expenses', () => {
   });
 
   it('excludes a deleted expense from balances but keeps it out of sight, not out of history', async () => {
-    const { alice, bob, group, both } = await twoPersonGroup();
+    const { alice, group, both } = await twoPersonGroup();
     const expense = await addExpense(alice, group.id, {
       amount: 4000,
       currency: 'USD',

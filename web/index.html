@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Reference client for the Tallyup API: track shared group expenses and settle up in the fewest payments."
+    />
+    <title>Tallyup</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🧾</text></svg>"
+    />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="topbar" id="topbar" hidden>
+      <a class="topbar__brand" href="#/groups">
+        <span class="topbar__mark" aria-hidden="true">₸</span>
+        <span>Tallyup</span>
+      </a>
+      <div class="topbar__actions">
+        <span class="topbar__user" id="topbar-user"></span>
+        <button class="btn btn--ghost btn--sm" id="sign-out" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main class="main" id="main" tabindex="-1">
+      <!-- Views render here. -->
+    </main>
+
+    <footer class="footer" id="footer" hidden>
+      <p>
+        Reference client for the Tallyup API.
+        <a href="/docs">API reference</a> ·
+        <a href="/v1/openapi.json">OpenAPI</a>
+      </p>
+    </footer>
+
+    <!-- Toast region. Announced politely so errors reach screen readers
+         without interrupting whatever the user is doing. -->
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

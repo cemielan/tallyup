@@ -79,15 +79,35 @@ forward if straightforward), remaining `SHOULD`/`MAY` items worth doing.
 - [ ] README has the full working `curl` flow (NFR-304) and a clear
       "why this exists / what it demonstrates" section for anyone
       landing on the repo cold (recruiters, in particular).
-- [ ] A minimal reference consumer exists — this can be as small as a
-      single-page HTML+fetch demo or a short CLI script — proving the
-      "different frontends, same backend" story from the Project Brief.
-      This does **not** need to be polished UI; it needs to prove the
-      API is genuinely usable by something that isn't the test suite.
+- [x] A reference consumer exists, proving the "different frontends, same
+      backend" story from the Project Brief. **Delivered beyond this
+      criterion, deliberately:** the acceptance bar here was a throwaway
+      HTML+fetch page, and what was built is a designed, responsive,
+      accessible client covering every endpoint (`web/`). That was an
+      explicit request, not scope creep that happened by accident — but it
+      is recorded here so the gap between "what the roadmap asked for" and
+      "what exists" is visible rather than quietly assumed.
+
+      It is also worth being honest about the ordering: this was built
+      before Phase 2's remaining acceptance criteria (service-layer
+      coverage above 80%, and the CPU benchmark behind NFR-202 and
+      Security §2) were met, which contradicts Ground Rule 1 in the
+      Project Brief. Those two items remain the real outstanding work.
 - [ ] Dependabot (or equivalent) is enabled and green (NFR-503).
 - [ ] A backup export has actually been run once, following
       `docs/06-DEPLOYMENT.md` §7, so the process is proven, not just
       documented.
+
+## Known gaps, carried forward
+
+These are open and deliberately recorded rather than discovered later:
+
+| Gap | Requirement | Why it matters |
+|---|---|---|
+| PBKDF2 iteration count is unbenchmarked | NFR-202, Security §2 | The count ships at 100,000. Security §2 requires benchmarking it against the per-request CPU budget before relying on it; too high risks Error 1102 on every login, too low weakens the hash. This is the single highest-risk unverified assumption in the project. |
+| No test-coverage measurement | NFR-501 | The 80% service-layer floor is unmeasured, so it is unproven rather than met. |
+| No load test of the balances path | NFR-201 | The p95-under-200ms claim has not been measured at the edge. |
+| Web client has no automated test | — | The client was verified once by driving it in a real browser engine, but nothing in CI would catch a regression in it. |
 
 ## Explicitly deferred (not on this roadmap)
 

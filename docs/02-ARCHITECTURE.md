@@ -16,6 +16,7 @@
 | API docs | **Scalar** (or Swagger UI) serving the generated OpenAPI JSON | Free, static, no separate hosting needed — served by the same Worker. |
 | Rate limiting | **D1**-backed fixed-window counter (one upsert per request) | Originally specified as KV. Changed during implementation because the free KV write budget is 1,000/day (§3), which a per-request counter exhausts within an hour of modest traffic, while D1's free write allowance is two orders of magnitude larger and needs no extra binding. This is the mitigation this document already named under "Upgrade triggers", adopted up front rather than after an outage. |
 | Secrets | `wrangler secret put` (production) + `.dev.vars` (local, gitignored) | Never in source control, never in `wrangler.toml`. |
+| Reference web client | Vanilla JavaScript with JSDoc types, served as **Workers Static Assets** from the same Worker | Proves the API is usable by something that is not the test suite (Roadmap Phase 3). Same origin as the API, so no CORS configuration is involved and no token ever crosses an origin boundary. No build step, so CI gains nothing to break and the browser runs exactly what is in the repo; `tsc --checkJs` still type-checks it. Static asset requests are free and do not draw on the Worker request budget. |
 | Domain | `*.workers.dev` free subdomain by default; a custom domain is free to attach if you already own one (Cloudflare doesn't charge for the attachment, only domain registration itself costs money elsewhere). | |
 
 ## 2. High-level flow
@@ -56,7 +57,8 @@ as a production assumption — free-tier terms are Cloudflare's to change.**
 | KV reads | 100,000/day | Not used — rate-limit counters live in D1 instead (see §1). |
 | KV writes | **1,000/day** | This is the number that ruled KV out for rate limiting: a naive "write a KV entry per request" limiter blows it at only ~40 requests/hour sustained. Rather than approximate around it, the counters went to D1, whose free write allowance is far larger. No KV namespace is bound at all, which also removes a setup step. |
 | D1 storage | ~5GB | Effectively unlimited for this app's data shape (users/groups/expenses are tiny rows). |
-| Worker script size | 3MB compressed | Watch dependency bloat; this is generous for a Hono + Drizzle + Zod stack but don't casually add heavy libraries. |
+| Worker script size | 3MB compressed | Watch dependency bloat; this is generous for a Hono + Drizzle + Zod stack but don't casually add heavy libraries. The web client does not count against this — static assets are stored and served separately from the Worker script. |
+| Static asset requests | Unlimited, free | Requests the asset handler serves (the web client's HTML, CSS and JS) neither cost money nor consume the 100,000/day Worker request allowance. Only the `/v1/...` API calls the client makes are billed against it. |
 
 ### Upgrade triggers
 
@@ -78,6 +80,14 @@ bill:
   limitation — but if the roadmap later needs something Postgres-specific,
   that's a deliberate stack change to re-document here, not a silent
   workaround.
+- **The web client holds its tokens in `sessionStorage`.** The API is a
+  pure bearer-token API with no cookie session, so a browser client has to
+  keep the access and refresh tokens somewhere JavaScript can read, which
+  means any successful XSS on the client can steal a session. This is
+  acceptable for a reference consumer and would not be for a deployment
+  holding real financial relationships; fixing it properly means adding a
+  cookie-based session endpoint to the API, which is a deliberate scope
+  change and not a silent one.
 - **No long-lived connections.** Workers are request/response only — no
   WebSocket-based live balance updates without adding Durable Objects
   (paid tier). Out of scope; poll instead.

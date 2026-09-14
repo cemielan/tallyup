@@ -5,12 +5,14 @@
   "type": "module",
   "description": "REST API for tracking shared group expenses and computing minimal settlements.",
   "license": "MIT",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p web --noEmit",
+    "lint": "tsc --noEmit && tsc -p web --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
@@ -32,5 +34,7 @@
     "vitest": "~4.1.11",
     "wrangler": "^4.131.0"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

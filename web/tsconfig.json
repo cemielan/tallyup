@@ -1,0 +1,24 @@
+{
+  // The web client is plain JavaScript with JSDoc types: no build step, no
+  // transpile, the browser runs exactly what is in the repo. `checkJs` still
+  // gives it full type checking in CI, so "no build" costs no type safety.
+  //
+  // It needs its own config because it targets the DOM, while the Worker
+  // under src/ targets the Workers runtime -- mixing those two lib sets
+  // would let browser-only globals typecheck inside the Worker.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": [],
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "noUnusedLocals": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["js/**/*.js"]
+}

@@ -14,6 +14,20 @@ compatibility_flags = ["nodejs_compat"]
 [observability]
 enabled = true
 
+# The reference web client, served as static assets from this same Worker.
+#
+# Same origin as the API, so the browser never makes a cross-origin request
+# and the CORS allow-list below applies only to third-party clients. Static
+# asset requests are also free and do not count against the Worker request
+# budget (docs/02-ARCHITECTURE.md §3).
+#
+# `not_found_handling` is deliberately left at its default: turning on
+# single-page-application mode would rewrite every unmatched path to
+# index.html, including a mistyped `/v1/...`, hiding real 404s from API
+# clients. The client uses hash routing instead, which never reaches here.
+[assets]
+directory = "./web"
+
 # Non-secret configuration. Override per environment.
 [vars]
 ENVIRONMENT = "development"
@@ -34,6 +48,9 @@ migrations_dir = "migrations"
 
 [env.production]
 name = "tallyup"
+
+[env.production.assets]
+directory = "./web"
 
 [env.production.vars]
 ENVIRONMENT = "production"
