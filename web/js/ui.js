@@ -137,6 +137,44 @@ export function money(minor, currency, { signed = false } = {}) {
   );
 }
 
+/**
+ * Distribute `total` across weighted participants, largest remainder first,
+ * so the parts always sum to exactly `total`.
+ *
+ * Presentational only -- the split editor uses it to preview what each
+ * person will owe, and every figure it produces is labelled "≈". The amounts
+ * actually stored are the ones `debt-simplify` computes server-side.
+ *
+ * @param {number} total
+ * @param {Array<[string, number]>} weights
+ * @returns {Map<string, number>}
+ */
+export function estimateShares(total, weights) {
+  const sum = weights.reduce((acc, [, weight]) => acc + weight, 0);
+  if (!(sum > 0) || !(total > 0)) return new Map();
+
+  /** @type {Map<string, number>} */
+  const out = new Map();
+  /** @type {Array<[string, number]>} */
+  const remainders = [];
+  let allocated = 0;
+
+  for (const [id, weight] of weights) {
+    const exact = (total * weight) / sum;
+    const floored = Math.floor(exact);
+    out.set(id, floored);
+    allocated += floored;
+    remainders.push([id, exact - floored]);
+  }
+
+  remainders.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  for (let i = 0; i < total - allocated && remainders.length > 0; i += 1) {
+    const [id] = remainders[i % remainders.length];
+    out.set(id, (out.get(id) ?? 0) + 1);
+  }
+  return out;
+}
+
 /* ---------- Formatting ---------- */
 
 export function formatDate(value) {
@@ -166,14 +204,54 @@ export function relativeDate(value) {
   return formatter.format(0, 'minute');
 }
 
+/**
+ * A stable colour per person, so the same face keeps the same colour across
+ * screens. Hue comes from a hash of the name; saturation and lightness are
+ * fixed so every avatar stays legible and none of them fight the accent.
+ */
+function hueFor(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  return Math.abs(hash) % 360;
+}
+
+/**
+ * An initials avatar.
+ *
+ * @param {string} name
+ * @param {'sm' | 'md' | 'lg'} [size]
+ */
+export function avatar(name, size = 'md') {
+  const hue = hueFor(name || '?');
+  return h(
+    'span',
+    {
+      class: `avatar${size === 'md' ? '' : ` avatar--${size}`}`,
+      title: name,
+      'aria-hidden': 'true',
+      style: {
+        background: `hsl(${hue} 72% 88%)`,
+        color: `hsl(${hue} 62% 32%)`,
+      },
+    },
+    initials(name),
+  );
+}
+
 /** Up to two initials, for the member avatars. */
 export function initials(name) {
-  return (name || '?')
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part[0] ?? '')
-    .join('');
+  // Trim before the fallback: a name of only spaces is truthy, so testing it
+  // first produced an empty avatar rather than the placeholder.
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) return '?';
+
+  return (
+    trimmed
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0] ?? '')
+      .join('') || '?'
+  );
 }
 
 /* ---------- Feedback ---------- */

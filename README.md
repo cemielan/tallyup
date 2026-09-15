@@ -64,7 +64,8 @@ cp .dev.vars.example .dev.vars
 openssl rand -base64 32   # paste into JWT_SECRET in .dev.vars
 
 npm run dev               # http://localhost:8787
-npm test                  # runs inside the real Workers runtime
+npm test                  # API suite (real Workers runtime) + client suite
+npm run test:coverage     # same, with the NFR-501 coverage floor enforced
 ```
 
 Full setup, production deployment, backups and rollback:
@@ -86,6 +87,15 @@ endpoint: registration and sign-in with silent token refresh, groups, invite
 codes and rotation, expenses in all four split types with a live-validating
 split editor, per-currency balances, suggested settlements, and the
 propose/confirm/decline cycle.
+
+### Watching the API work
+
+The client's real purpose is to make the API legible, so **every request it
+sends is logged in the app itself** — method, path, status, duration, and
+both payloads — behind the floating **API** button. Tokens and passwords are
+redacted before anything reaches the log, so it is safe to leave open while
+demonstrating to a room. It beats asking someone to open devtools, and it
+means the answer to "what did that button actually send?" is one click away.
 
 It is **served by the same Worker** as the API, as static assets. Three
 things follow from that, all of them deliberate:
@@ -231,8 +241,9 @@ the arithmetic works (FR-501).
 web/              reference web client (static assets, no build step)
   index.html      app shell
   styles.css      design tokens, light and dark, responsive
-  js/api.js       API client: auth, token refresh, error envelope
+  js/api.js       API client: auth, token refresh, error envelope, call log
   js/ui.js        DOM helper, exact money conversion, toasts, dialogs
+  js/inspector.js the API activity panel
   js/view-*.js    one file per screen
   js/expense-form.js  the split editor, all four split types
 src/

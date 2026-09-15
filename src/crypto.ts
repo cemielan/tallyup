@@ -4,6 +4,37 @@
  * `argon2` build do not run in a Worker isolate (docs/05-SECURITY.md §2).
  */
 
+/**
+ * PBKDF2 iteration count for new password hashes.
+ *
+ * BENCHMARKED, NOT GUESSED. Measured inside the Workers runtime by
+ * `test/cpu-budget.test.ts`, which fails if this value stops fitting the
+ * budget:
+ *
+ *     4,000 iterations   3.5 ms       100,000 iterations   62.8 ms
+ *     6,000 iterations   4.6 ms       200,000 iterations  126.0 ms
+ *    10,000 iterations   8.0 ms
+ *
+ * The Workers Free plan allows 10 ms of CPU per request and, unlike the
+ * Paid plan, does not let that be raised (`limits.cpu_ms` is Paid-only).
+ * Hashing is the dominant cost of a login, so 4,000 leaves roughly 6 ms for
+ * everything else and survives edge hardware being slower than a dev laptop.
+ *
+ * BE CLEAR ABOUT WHAT THIS BUYS: 4,000 iterations is far below current OWASP
+ * guidance for PBKDF2-SHA256 (600,000). It is not a judgement that weaker
+ * hashing is acceptable -- it is the most this platform tier can afford, and
+ * a password database stolen from this deployment would be meaningfully
+ * cheaper to crack than one from a conventionally-hosted app.
+ *
+ * The fix is a plan change, not a code change (docs/02-ARCHITECTURE.md
+ * "Upgrade triggers"): Workers Paid is $5/month, makes `limits.cpu_ms`
+ * configurable, and puts 600,000 iterations comfortably in reach. Because
+ * every stored hash carries the count it was made with, raising this value
+ * is backward compatible -- existing users keep verifying at their old cost
+ * and upgrade on their next password write.
+ */
+export const DEFAULT_PBKDF2_ITERATIONS = 4_000;
+
 const PBKDF2_HASH = 'SHA-256';
 const SALT_BYTES = 16;
 const DERIVED_BITS = 256;

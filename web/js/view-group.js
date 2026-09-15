@@ -2,11 +2,11 @@ import * as api from './api.js';
 import { openExpenseForm } from './expense-form.js';
 import {
   alertBox,
+  avatar,
   confirmAction,
   emptyState,
   formatMoney,
   h,
-  initials,
   money,
   relativeDate,
   render,
@@ -66,10 +66,19 @@ export async function groupView(root, groupId) {
           { class: 'page-head__title' },
           h('h1', null, group.name),
           h(
-            'span',
-            { class: 'page-head__sub' },
-            `${group.members.length} ${group.members.length === 1 ? 'member' : 'members'}`,
-            isOwner ? ' · you own this group' : '',
+            'div',
+            { class: 'row', style: { gap: '0.6rem' } },
+            h(
+              'div',
+              { class: 'avatar-stack' },
+              group.members.slice(0, 5).map((member) => avatar(member.displayName, 'sm')),
+            ),
+            h(
+              'span',
+              { class: 'page-head__sub' },
+              `${group.members.length} ${group.members.length === 1 ? 'member' : 'members'}`,
+              isOwner ? ' · you own this group' : '',
+            ),
           ),
         ),
         h(
@@ -170,7 +179,7 @@ export async function groupView(root, groupId) {
     return h(
       'div',
       { class: 'list__item' },
-      h('div', { class: 'avatar', 'aria-hidden': 'true' }, initials(nameOf(expense.paidBy))),
+      avatar(nameOf(expense.paidBy)),
       h(
         'div',
         { class: 'list__main' },
@@ -306,11 +315,7 @@ export async function groupView(root, groupId) {
           h(
             'div',
             { class: 'list__item' },
-            h(
-              'div',
-              { class: 'avatar', 'aria-hidden': 'true' },
-              initials(entry.displayName ?? nameOf(entry.userId)),
-            ),
+            avatar(entry.displayName ?? nameOf(entry.userId)),
             h(
               'div',
               { class: 'list__main' },
@@ -382,7 +387,7 @@ export async function groupView(root, groupId) {
               return h(
                 'div',
                 { class: 'list__item' },
-                h('div', { class: 'avatar', 'aria-hidden': 'true' }, initials(nameOf(transfer.from))),
+                avatar(nameOf(transfer.from)),
                 h(
                   'div',
                   { class: 'list__main' },
@@ -452,7 +457,7 @@ export async function groupView(root, groupId) {
           return h(
             'div',
             { class: 'list__item' },
-            h('div', { class: 'avatar', 'aria-hidden': 'true' }, initials(nameOf(item.fromUserId))),
+            avatar(nameOf(item.fromUserId)),
             h(
               'div',
               { class: 'list__main' },
@@ -648,7 +653,7 @@ export async function groupView(root, groupId) {
     return h(
       'div',
       { class: 'list__item' },
-      h('div', { class: 'avatar', 'aria-hidden': 'true' }, initials(member.displayName)),
+      avatar(member.displayName),
       h(
         'div',
         { class: 'list__main' },

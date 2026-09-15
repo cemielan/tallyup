@@ -1,65 +1,174 @@
 import * as api from './api.js';
-import { alertBox, h, render, toast } from './ui.js';
+import { inspectorToggle, openInspector } from './inspector.js';
+import { alertBox, avatar, h, render, toast } from './ui.js';
 import { authView } from './view-auth.js';
+import { dashboardView } from './view-dashboard.js';
 import { groupView } from './view-group.js';
-import { groupsView } from './view-groups.js';
+import { createGroupDialog, groupsView } from './view-groups.js';
 
 /**
  * Bootstrap and routing.
  *
  * Hash routing, not the History API, and deliberately: the Worker serves
- * this app as a static asset and routes everything it does not recognise to
- * the API. Real paths would need a server-side catch-all rewrite, which
- * would also swallow `/v1/...` typos into the app instead of returning a
- * clean 404. A `#/...` fragment never reaches the server at all.
+ * this app as static assets and routes everything it does not recognise to
+ * the API. Real paths would need a server-side catch-all rewrite, and that
+ * rewrite would also swallow a mistyped `/v1/...` into the app instead of
+ * returning a clean 404 to an API client. A `#/...` fragment never reaches
+ * the server at all.
  */
 
+const shell = /** @type {HTMLElement} */ (document.getElementById('shell'));
+const nav = /** @type {HTMLElement} */ (document.getElementById('nav'));
 const main = /** @type {HTMLElement} */ (document.getElementById('main'));
-const topbar = /** @type {HTMLElement} */ (document.getElementById('topbar'));
-const footer = /** @type {HTMLElement} */ (document.getElementById('footer'));
-const userLabel = /** @type {HTMLElement} */ (document.getElementById('topbar-user'));
-const signOutButton = /** @type {HTMLButtonElement} */ (document.getElementById('sign-out'));
+const tabbarSlot = /** @type {HTMLElement} */ (document.getElementById('tabbar-slot'));
 
-function chrome(signedIn) {
-  topbar.hidden = !signedIn;
-  footer.hidden = !signedIn;
+const NAV_ITEMS = /** @type {const} */ ([
+  ['#/', '◈', 'Overview'],
+  ['#/groups', '👥', 'Groups'],
+]);
+
+/** Which nav entry the current hash belongs to. */
+function activeHref() {
+  return location.hash.startsWith('#/groups') ? '#/groups' : '#/';
+}
+
+function drawChrome(signedIn) {
+  shell.classList.toggle('shell--signed-in', signedIn);
+
+  if (!signedIn) {
+    render(nav);
+    render(tabbarSlot);
+    return;
+  }
+
   const user = api.currentUser();
-  userLabel.textContent = user ? user.displayName : '';
+  const current = activeHref();
+
+  render(
+    nav,
+    h(
+      'a',
+      { class: 'brand', href: '#/' },
+      h('span', { class: 'brand__mark', 'aria-hidden': 'true' }, '₸'),
+      'Tallyup',
+    ),
+    NAV_ITEMS.map(([href, icon, label]) =>
+      h(
+        'a',
+        { class: 'nav__link', href, 'aria-current': href === current ? 'page' : null },
+        h('span', { class: 'nav__icon', 'aria-hidden': 'true' }, icon),
+        label,
+      ),
+    ),
+    h(
+      'a',
+      { class: 'nav__link', href: '/docs', target: '_blank', rel: 'noreferrer' },
+      h('span', { class: 'nav__icon', 'aria-hidden': 'true' }, '⌘'),
+      'API reference',
+    ),
+    h(
+      'div',
+      { class: 'nav__foot' },
+      h(
+        'div',
+        { class: 'nav__user' },
+        avatar(user?.displayName ?? '?'),
+        h(
+          'div',
+          { style: { minWidth: '0' } },
+          h('div', { class: 'nav__username' }, user?.displayName ?? ''),
+          h('div', { class: 'nav__email' }, user?.email ?? ''),
+        ),
+      ),
+      h(
+        'button',
+        { class: 'btn btn--ghost btn--sm', type: 'button', onClick: signOut },
+        'Sign out',
+      ),
+    ),
+  );
+
+  // The raised centre action mirrors the sidebar's primary action on phones.
+  render(
+    tabbarSlot,
+    h(
+      'nav',
+      { class: 'tabbar', 'aria-label': 'Main' },
+      h(
+        'a',
+        { class: 'tabbar__item', href: '#/', 'aria-current': current === '#/' ? 'page' : null },
+        h('span', { 'aria-hidden': 'true' }, '◈'),
+        h('span', null, 'Overview'),
+      ),
+      h(
+        'a',
+        {
+          class: 'tabbar__item',
+          href: '#/groups',
+          'aria-current': current === '#/groups' ? 'page' : null,
+        },
+        h('span', { 'aria-hidden': 'true' }, '👥'),
+        h('span', null, 'Groups'),
+      ),
+      h(
+        'button',
+        {
+          class: 'tabbar__fab',
+          type: 'button',
+          'aria-label': 'New group',
+          onClick: () => createGroupDialog(route),
+        },
+        '+',
+      ),
+      h(
+        'button',
+        { class: 'tabbar__item', type: 'button', onClick: () => openInspector() },
+        h('span', { 'aria-hidden': 'true' }, '⚡'),
+        h('span', null, 'API'),
+      ),
+      h(
+        'button',
+        { class: 'tabbar__item', type: 'button', onClick: signOut },
+        h('span', { 'aria-hidden': 'true' }, '⏻'),
+        h('span', null, 'Sign out'),
+      ),
+    ),
+    inspectorToggle(),
+  );
+}
+
+async function signOut() {
+  await api.logout();
+  location.hash = '';
+  route();
 }
 
 async function route() {
-  const user = api.currentUser();
-
-  if (!user) {
-    chrome(false);
+  if (!api.currentUser()) {
+    drawChrome(false);
     authView(main, {
       onSignedIn: () => {
-        // Land on the group list unless a deep link brought them here.
-        if (!location.hash.startsWith('#/groups')) location.hash = '#/groups';
+        if (!location.hash.startsWith('#/')) location.hash = '#/';
         else route();
       },
     });
     return;
   }
 
-  chrome(true);
+  drawChrome(true);
 
-  // #/groups | #/groups/:id | #/groups/:id/:tab
+  // #/ | #/groups | #/groups/:id | #/groups/:id/:tab
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
 
   try {
-    if (parts[0] === 'groups' && parts[1]) {
-      await groupView(main, parts[1]);
-    } else {
-      await groupsView(main);
-    }
+    if (parts[0] === 'groups' && parts[1]) await groupView(main, parts[1]);
+    else if (parts[0] === 'groups') await groupsView(main);
+    else await dashboardView(main);
   } catch (error) {
     if (error instanceof api.ApiError && error.status === 401) return; // signOut already fired
     render(
       main,
-      alertBox(
-        'Something went wrong loading that page. Check that the API is running, then reload.',
-      ),
+      alertBox('Something went wrong loading that page. Check the API is running, then reload.'),
     );
     console.error(error);
   }
@@ -74,12 +183,6 @@ api.authEvents.addEventListener('signout', () => {
   route();
 });
 
-signOutButton.addEventListener('click', async () => {
-  await api.logout();
-  location.hash = '';
-  route();
-});
-
 window.addEventListener('hashchange', route);
 
 // A first paint that fails silently is the worst failure mode for a demo,
@@ -89,17 +192,13 @@ route().catch((error) => {
   render(main, alertBox('The app failed to start. Check the browser console for details.'));
 });
 
-// Warn early and clearly if the app is opened from the filesystem rather
-// than served by the Worker, since every API call would then be cross-origin.
+// Warn clearly if the app is opened from the filesystem rather than served
+// by the Worker, since every API call would then be cross-origin.
 if (location.protocol === 'file:') {
   render(
     main,
-    h(
-      'div',
-      { class: 'auth' },
-      alertBox(
-        'Open this app through the Worker (npm run dev, then http://localhost:8787) rather than from the filesystem — the API is served from the same origin.',
-      ),
+    alertBox(
+      'Open this app through the Worker (npm run dev, then http://localhost:8787) rather than from the filesystem — the API is served from the same origin.',
     ),
   );
 }

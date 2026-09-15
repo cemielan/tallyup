@@ -102,12 +102,21 @@ forward if straightforward), remaining `SHOULD`/`MAY` items worth doing.
 
 These are open and deliberately recorded rather than discovered later:
 
+### Closed
+
+| Was | Outcome |
+|---|---|
+| PBKDF2 iteration count unbenchmarked (NFR-202, Security §2) | Benchmarked in the Workers runtime. The shipped 100,000 cost ~63 ms against a hard 10 ms budget — **every login and registration would have failed with Error 1102**. Now 4,000 (~3.5 ms), held by `test/cpu-budget.test.ts`, with the weakness and the $5/month fix recorded in Security §2. |
+| No coverage measurement (NFR-501) | `npm run test:coverage` enforces an 80% floor on the service layer and runs in CI. Currently 92% statements, 84% branches. |
+| No load test of the balances path (NFR-201/202) | `test/scale.test.ts` seeds a full 50-member group and measures read and CPU separately. It found two real defects: an expense shared by more than 25 people failed on D1's 100-parameter statement limit, and netting 10,000 split rows cost 12 ms of a 10 ms budget (now ~4 ms). |
+| Web client had no automated test | `test/web/money.test.ts` covers the money boundary and share allocation, and runs in CI. It found a further defect: an all-whitespace name rendered an empty avatar. |
+
+### Still open
+
 | Gap | Requirement | Why it matters |
 |---|---|---|
-| PBKDF2 iteration count is unbenchmarked | NFR-202, Security §2 | The count ships at 100,000. Security §2 requires benchmarking it against the per-request CPU budget before relying on it; too high risks Error 1102 on every login, too low weakens the hash. This is the single highest-risk unverified assumption in the project. |
-| No test-coverage measurement | NFR-501 | The 80% service-layer floor is unmeasured, so it is unproven rather than met. |
-| No load test of the balances path | NFR-201 | The p95-under-200ms claim has not been measured at the edge. |
-| Web client has no automated test | — | The client was verified once by driving it in a real browser engine, but nothing in CI would catch a regression in it. |
+| The client's rendering has no automated coverage | — | The views are verified by driving the real app in a headless browser, which is not wired into CI. Only the pure money logic is covered automatically, so a regression in a view would be caught by a human, not the merge gate. |
+| p95 latency is measured locally, never at the edge | NFR-201 | The CPU numbers come from Miniflare on a dev machine. Edge hardware differs, and Cloudflare freezes timers in production, so the real figure has to come from the dashboard's CPU-time percentiles after a deploy. |
 
 ## Explicitly deferred (not on this roadmap)
 

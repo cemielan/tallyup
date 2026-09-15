@@ -9,6 +9,33 @@ import * as schema from './schema';
 type Db = DrizzleD1Database<typeof schema>;
 
 /**
+ * D1 allows at most 100 bound parameters per statement, and each statement
+ * inside a `batch` is counted on its own. An `expense_splits` row binds four
+ * of them, so a single insert can carry 25 rows -- while a group may have up
+ * to 50 members, every one of whom can share an expense.
+ *
+ * Splitting the insert is therefore not a micro-optimisation: without it, an
+ * expense shared by more than 25 people fails outright with
+ * "too many SQL variables".
+ */
+const SPLIT_ROWS_PER_STATEMENT = 25;
+
+function chunk<T>(rows: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
+  return out;
+}
+
+type BatchStatements = Parameters<Db['batch']>[0];
+
+/** Insert statements for a set of split rows, chunked to fit D1's limit. */
+function splitInserts(db: Db, splitRows: Array<typeof schema.expenseSplits.$inferInsert>) {
+  return chunk(splitRows, SPLIT_ROWS_PER_STATEMENT).map((part) =>
+    db.insert(schema.expenseSplits).values(part),
+  );
+}
+
+/**
  * The single place that reads and writes the expense ledger. Balances are
  * always derived from these rows, never stored or mutated independently
  * (FR-308), so editing or deleting an expense changes the next balance read
@@ -112,8 +139,8 @@ export async function recordExpense(db: Db, input: ExpenseWrite) {
 
   await db.batch([
     db.insert(schema.expenses).values(row),
-    db.insert(schema.expenseSplits).values(splitRows),
-  ]);
+    ...splitInserts(db, splitRows),
+  ] as unknown as BatchStatements);
 
   return { ...row, splits: splitRows.map(({ userId, amount }) => ({ userId, amount })) };
 }
@@ -129,8 +156,8 @@ export async function replaceSplits(db: Db, expenseId: string, shares: Record<st
 
   await db.batch([
     db.delete(schema.expenseSplits).where(eq(schema.expenseSplits.expenseId, expenseId)),
-    db.insert(schema.expenseSplits).values(splitRows),
-  ]);
+    ...splitInserts(db, splitRows),
+  ] as unknown as BatchStatements);
 
   return splitRows.map(({ userId, amount }) => ({ userId, amount }));
 }
@@ -179,10 +206,21 @@ export async function expenseSplitsOf(db: Db, expenseId: string) {
  * obligations, so each settles on its own.
  */
 export async function balancesByCurrency(db: Db, groupId: string): Promise<Record<string, Balances>> {
+  return netBalances(await ledgerRows(db, groupId));
+}
+
+/**
+ * The raw expense/split rows behind a balance calculation.
+ *
+ * Kept separate from the netting so the two costs can be measured apart:
+ * waiting on D1 does not count against the CPU limit, but netting the rows
+ * in memory does, and only one of those is worth optimising.
+ */
+export async function ledgerRows(db: Db, groupId: string) {
   // One join, not a query per expense: a Worker gets 50 subrequests per
   // request (docs/02-ARCHITECTURE.md §3), so an N+1 read pattern is a hard
   // ceiling here, not merely a slowdown.
-  const rows = await db
+  return db
     .select({
       expenseId: schema.expenses.id,
       currency: schema.expenses.currency,
@@ -194,7 +232,20 @@ export async function balancesByCurrency(db: Db, groupId: string): Promise<Recor
     .from(schema.expenses)
     .innerJoin(schema.expenseSplits, eq(schema.expenseSplits.expenseId, schema.expenses.id))
     .where(and(eq(schema.expenses.groupId, groupId), isNull(schema.expenses.deletedAt)));
+}
 
+/**
+ * Net a set of ledger rows into one balance sheet per currency. Pure and
+ * synchronous, so this is exactly the CPU the balances endpoint spends.
+ *
+ * ponytail: O(rows) with a Map per currency, which is fine to roughly ten
+ * thousand split rows and then starts eating the request's CPU budget. If a
+ * real group ever gets that large, the fix is a stored running balance
+ * invalidated on expense write -- not a faster loop.
+ */
+export function netBalances(
+  rows: Awaited<ReturnType<typeof ledgerRows>>,
+): Record<string, Balances> {
   // Rebuild one expense per id, then hand the whole set to the library. The
   // stored shares are already resolved, so they go back in as an `exact`
   // split -- the library stays the only thing that knows how to net them

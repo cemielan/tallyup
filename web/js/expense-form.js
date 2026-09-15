@@ -2,6 +2,7 @@ import * as api from './api.js';
 import {
   CURRENCIES,
   alertBox,
+  estimateShares,
   field,
   formatMoney,
   h,
@@ -28,44 +29,6 @@ const SPLIT_TYPES = /** @type {const} */ ([
   ['percentage', 'Percent', 'Type each person’s percentage. They must add up to 100%.'],
   ['shares', 'Shares', 'Weight the split — 2 shares pays twice what 1 share pays.'],
 ]);
-
-/**
- * Proportional allocation preview, largest remainder first.
- *
- * Presentational only: it exists so the form can show roughly what each
- * person will owe before submitting, and every figure it produces is marked
- * with "≈". The amounts that get stored are the ones `debt-simplify`
- * computes server-side, and the created expense comes back with them.
- *
- * @param {number} total
- * @param {Array<[string, number]>} weights
- * @returns {Map<string, number>}
- */
-function estimate(total, weights) {
-  const sum = weights.reduce((acc, [, weight]) => acc + weight, 0);
-  if (!(sum > 0) || !(total > 0)) return new Map();
-
-  /** @type {Map<string, number>} */
-  const out = new Map();
-  /** @type {Array<[string, number]>} */
-  const remainders = [];
-  let allocated = 0;
-
-  for (const [id, weight] of weights) {
-    const exact = (total * weight) / sum;
-    const floored = Math.floor(exact);
-    out.set(id, floored);
-    allocated += floored;
-    remainders.push([id, exact - floored]);
-  }
-
-  remainders.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
-  for (let i = 0; i < total - allocated && remainders.length > 0; i += 1) {
-    const [id] = remainders[i % remainders.length];
-    out.set(id, (out.get(id) ?? 0) + 1);
-  }
-  return out;
-}
 
 /**
  * @param {{
@@ -111,27 +74,32 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
     members.map((member) =>
       h(
         'option',
-        {
-          value: member.id,
-          selected: member.id === (expense?.paidBy ?? currentUserId),
-        },
+        { value: member.id, selected: member.id === (expense?.paidBy ?? currentUserId) },
         member.id === currentUserId ? `${member.displayName} (you)` : member.displayName,
       ),
     ),
   );
 
-  /** Which split type is active, and who is included with what weight. */
-  let splitType = /** @type {string} */ (expense?.splitType ?? 'equal');
+  /**
+   * An existing expense stores resolved amounts per person, not the weights
+   * that produced them -- deliberately, so a later change in rounding cannot
+   * rewrite history (docs/03-DATA-MODEL.md). The original percentages or
+   * share counts are therefore unrecoverable, so editing always opens in
+   * `exact` mode showing the amounts actually stored. Pre-filling percentage
+   * fields with minor-unit amounts, as an earlier version did, displayed
+   * confidently wrong numbers.
+   */
+  let splitType = editing ? 'exact' : 'equal';
 
   /** @type {Map<string, {included: boolean, value: string}>} */
   const rows = new Map(
     members.map((member) => {
-      const existing = expense?.splits?.find((s) => s.userId === member.id);
+      const existing = expense?.splits?.find((split) => split.userId === member.id);
       return [
         member.id,
         {
-          included: expense ? Boolean(existing) : true,
-          value: existing && expense ? toMajorString(existing.amount, expense.currency) : '',
+          included: editing ? Boolean(existing) : true,
+          value: existing ? toMajorString(existing.amount, expense.currency) : '',
         },
       ];
     }),
@@ -202,20 +170,61 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
     };
   }
 
-  function drawSplit() {
-    const total = totalMinor();
-    const preview = estimate(Number.isFinite(total) ? total : 0, weights());
-    const state = status();
+  /**
+   * Live elements the running totals write into.
+   *
+   * Updating these in place rather than redrawing the whole editor is what
+   * keeps focus and caret position while someone types or tabs between
+   * fields. An earlier version redrew on every blur, which threw focus away
+   * mid-entry and made tabbing through the rows impossible.
+   */
+  /** @type {Map<string, HTMLElement>} */
+  const previewEls = new Map();
+  /** @type {HTMLElement | null} */
+  let totalEl = null;
 
+  function refreshTotals() {
+    const total = totalMinor();
+    const preview = estimateShares(Number.isFinite(total) ? total : 0, weights());
+
+    for (const [id, el] of previewEls) {
+      const row = rows.get(id);
+      const share = preview.get(id);
+      el.textContent =
+        row?.included && share !== undefined ? `≈ ${formatMoney(share, currency())}` : '—';
+    }
+
+    if (totalEl) {
+      const state = status();
+      totalEl.dataset.ok = String(state.tone === 'ok');
+      const value = totalEl.lastElementChild;
+      if (value) value.textContent = state.message;
+    }
+  }
+
+  function drawSplit() {
+    previewEls.clear();
     const description = SPLIT_TYPES.find(([value]) => value === splitType)?.[2] ?? '';
+
+    totalEl = h(
+      'div',
+      { class: 'split-total', dataset: { ok: 'false' } },
+      h('span', null, splitType === 'exact' ? 'Assigned' : 'Total'),
+      h('span', null, ''),
+    );
 
     render(
       splitSlot,
-      h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Split')),
+      h('span', { class: 'field__label' }, 'Split'),
 
       h(
         'div',
-        { class: 'segmented', role: 'group', 'aria-label': 'Split type' },
+        {
+          class: 'segmented',
+          role: 'group',
+          'aria-label': 'Split type',
+          style: { marginBlock: '0.4rem 0.5rem' },
+        },
         SPLIT_TYPES.map(([value, label]) => [
           h('input', {
             type: 'radio',
@@ -224,8 +233,9 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
             checked: splitType === value,
             onChange: () => {
               splitType = value;
-              // Amounts typed for one split type mean nothing under another,
-              // so start the values clean rather than carry nonsense across.
+              // Amounts typed under one split type mean nothing under
+              // another, so values start clean rather than carrying nonsense
+              // across.
               for (const row of rows.values()) row.value = '';
               drawSplit();
             },
@@ -234,7 +244,7 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
         ]),
       ),
 
-      h('p', { class: 'field__hint', style: { marginBlock: '0.5rem' } }, description),
+      h('p', { class: 'field__hint', style: { marginBlockEnd: '0.6rem' } }, description),
 
       h(
         'div',
@@ -243,17 +253,24 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
           const row = rows.get(member.id);
           if (!row) return null;
 
-          const checkbox = h('input', {
-            type: 'checkbox',
-            checked: row.included,
-            'aria-label': `Include ${member.displayName}`,
-            onChange: (event) => {
-              row.included = event.currentTarget.checked;
-              drawSplit();
-            },
-          });
+          const preview = h('span', { class: 'split-row__preview' }, '—');
+          previewEls.set(member.id, preview);
 
-          const share = preview.get(member.id);
+          const valueInput =
+            splitType === 'equal'
+              ? null
+              : h('input', {
+                  class: 'input input--money',
+                  type: 'text',
+                  inputmode: 'decimal',
+                  value: row.value,
+                  disabled: !row.included,
+                  'aria-label': `${member.displayName} ${splitType}`,
+                  onInput: (event) => {
+                    row.value = event.currentTarget.value;
+                    refreshTotals();
+                  },
+                });
 
           return h(
             'div',
@@ -261,7 +278,18 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
             h(
               'label',
               { class: 'split-row__who' },
-              checkbox,
+              h('input', {
+                type: 'checkbox',
+                checked: row.included,
+                'aria-label': `Include ${member.displayName}`,
+                onChange: (event) => {
+                  row.included = event.currentTarget.checked;
+                  // Only values change, so the rows are left standing and
+                  // focus stays where the user put it.
+                  if (valueInput) valueInput.disabled = !row.included;
+                  refreshTotals();
+                },
+              }),
               h(
                 'span',
                 { class: 'split-row__name' },
@@ -271,60 +299,25 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
             h(
               'div',
               { class: 'split-row__value' },
-              splitType === 'equal'
-                ? h(
-                    'span',
-                    { class: 'split-row__preview' },
-                    row.included && share !== undefined ? `≈ ${formatMoney(share, currency())}` : '—',
-                  )
-                : [
-                    h('input', {
-                      class: 'input input--money',
-                      type: 'text',
-                      inputmode: 'decimal',
-                      value: row.value,
-                      disabled: !row.included,
-                      'aria-label': `${member.displayName} ${splitType}`,
-                      onInput: (event) => {
-                        row.value = event.currentTarget.value;
-                        updateStatus();
-                      },
-                      // Redraw on blur so the estimates refresh without the
-                      // field losing focus mid-typing.
-                      onBlur: () => drawSplit(),
-                    }),
-                    h(
-                      'span',
-                      { class: 'split-row__unit' },
-                      splitType === 'percentage' ? '%' : splitType === 'shares' ? '×' : '',
-                    ),
-                  ],
+              valueInput ?? preview,
+              valueInput &&
+                h(
+                  'span',
+                  { class: 'split-row__unit' },
+                  splitType === 'percentage' ? '%' : splitType === 'shares' ? '×' : '',
+                ),
             ),
           );
         }),
-        h(
-          'div',
-          { class: 'split-total', dataset: { ok: String(state.tone === 'ok') } },
-          h('span', null, splitType === 'exact' ? 'Assigned' : 'Total'),
-          h('span', null, state.message),
-        ),
+        totalEl,
       ),
     );
+
+    refreshTotals();
   }
 
-  /** Cheap update of just the running-total line while someone types. */
-  function updateStatus() {
-    const line = splitSlot.querySelector('.split-total');
-    if (!(line instanceof HTMLElement)) return;
-    const state = status();
-    line.dataset.ok = String(state.tone === 'ok');
-    const value = line.lastElementChild;
-    if (value) value.textContent = state.message;
-  }
-
-  amountInput.addEventListener('input', updateStatus);
-  amountInput.addEventListener('blur', drawSplit);
-  currencySelect.addEventListener('change', drawSplit);
+  amountInput.addEventListener('input', refreshTotals);
+  currencySelect.addEventListener('change', refreshTotals);
 
   /** Assemble the request body the API expects. */
   function buildSplit() {
@@ -355,7 +348,11 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
     };
   }
 
-  const submit = h('button', { class: 'btn', type: 'submit' }, editing ? 'Save changes' : 'Add expense');
+  const submit = h(
+    'button',
+    { class: 'btn', type: 'submit' },
+    editing ? 'Save changes' : 'Add expense',
+  );
 
   const form = h(
     'form',
@@ -418,6 +415,12 @@ export function openExpenseForm({ groupId, members, currentUserId, expense = nul
     ),
     field({ label: 'Description', input: descriptionInput }),
     field({ label: 'Paid by', input: paidBySelect }),
+    editing &&
+      h(
+        'p',
+        { class: 'field__hint' },
+        'Only resolved amounts are stored, so editing shows exact amounts rather than the original percentages or shares.',
+      ),
     splitSlot,
     errorSlot,
   );

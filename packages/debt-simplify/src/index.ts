@@ -177,10 +177,45 @@ export function calculateBalances(expenses: ExpenseInput[]): Balances {
   };
 
   for (const expense of expenses) {
-    const shares = resolveSplit(expense.amount, expense.split);
     credit(expense.paidBy, expense.amount);
-    for (const [id, share] of Object.entries(shares)) {
-      credit(id, -share);
+
+    // Fast path for `exact`, which is the shape a caller storing resolved
+    // shares replays them in. `resolveSplit` would validate the sum, copy
+    // the whole map, and hand back an equivalent object; here the same
+    // validation happens in the single pass that applies the debits. Over a
+    // large ledger that copy per expense is most of the work.
+    if (expense.split.type === 'exact') {
+      assertPositiveInt(expense.amount, 'amount');
+      let sum = 0;
+      let participants = 0;
+      for (const id in expense.split.amounts) {
+        // `for...in` walks the prototype chain; `Object.entries` does not.
+        // Guarding keeps this path's semantics identical to the slow one
+        // for any object a caller hands in.
+        if (!Object.hasOwn(expense.split.amounts, id)) continue;
+        const share = expense.split.amounts[id];
+        if (!Number.isInteger(share) || share < 0) {
+          throw new DebtSimplifyError(
+            `exact split amount for ${id} must be a non-negative integer`,
+          );
+        }
+        sum += share;
+        participants += 1;
+        credit(id, -share);
+      }
+      if (participants === 0) {
+        throw new DebtSimplifyError('an exact split needs at least one participant');
+      }
+      if (sum !== expense.amount) {
+        throw new DebtSimplifyError(`exact split amounts sum to ${sum}, expected ${expense.amount}`);
+      }
+      continue;
+    }
+
+    const shares = resolveSplit(expense.amount, expense.split);
+    for (const id in shares) {
+      if (!Object.hasOwn(shares, id)) continue;
+      credit(id, -shares[id]);
     }
   }
 

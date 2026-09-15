@@ -13,12 +13,14 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc -p web --noEmit",
     "lint": "tsc --noEmit && tsc -p web --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.web.config.ts",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply tallyup-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply tallyup-db --remote",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "test:coverage": "vitest run --coverage && vitest run --config vitest.web.config.ts",
+    "test:web": "vitest run --config vitest.web.config.ts"
   },
   "dependencies": {
     "debt-simplify": "*",
@@ -29,6 +31,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260911.1",
+    "@vitest/coverage-istanbul": "^4.1.11",
     "drizzle-kit": "^0.31.10",
     "typescript": "^5.9.3",
     "vitest": "~4.1.11",

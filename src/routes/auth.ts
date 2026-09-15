@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { sign } from 'hono/jwt';
 import {
+  DEFAULT_PBKDF2_ITERATIONS,
   dummyVerify,
   generateOpaqueToken,
   hashPassword,
@@ -20,9 +21,14 @@ import { loginSchema, parseBody, refreshSchema, registerSchema } from '../valida
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * The benchmarked default, overridable per environment. The override exists
+ * so tests can run a trivial count and so a deployment on a plan with a
+ * bigger CPU budget can raise it without a code change.
+ */
 function iterations(env: AppEnv['Bindings']): number {
-  const parsed = Number.parseInt(env.PBKDF2_ITERATIONS, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 100_000;
+  const parsed = Number.parseInt(env.PBKDF2_ITERATIONS ?? '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_PBKDF2_ITERATIONS;
 }
 
 const publicUser = (user: AuthenticatedUser) => ({

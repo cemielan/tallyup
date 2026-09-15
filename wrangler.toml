@@ -34,10 +34,14 @@ ENVIRONMENT = "development"
 # Comma-separated CORS allow-list. Never "*" for authenticated routes
 # (SECURITY §6). Set the real origins of whatever frontend calls this.
 CORS_ORIGINS = "http://localhost:5173,http://localhost:3000"
-# PBKDF2 iteration count for new password hashes. Existing hashes carry
-# their own count, so raising this is safe and applies on next password
-# write. Benchmark against the CPU budget before changing (SECURITY §2).
-PBKDF2_ITERATIONS = "100000"
+# PBKDF2 iteration count for new password hashes.
+#
+# Left unset on purpose: the shipped value is the benchmarked constant in
+# src/crypto.ts, so there is only one number to keep honest. Set this only to
+# override it -- for example after moving to Workers Paid, where the CPU
+# budget stops being 10 ms and a far higher count becomes affordable.
+# test/cpu-budget.test.ts is what proves whatever value is in force fits.
+# PBKDF2_ITERATIONS = "600000"
 
 [[d1_databases]]
 binding = "DB"
@@ -55,7 +59,6 @@ directory = "./web"
 [env.production.vars]
 ENVIRONMENT = "production"
 CORS_ORIGINS = "https://REPLACE_WITH_YOUR_FRONTEND_ORIGIN"
-PBKDF2_ITERATIONS = "100000"
 
 [[env.production.d1_databases]]
 binding = "DB"

@@ -33,6 +33,41 @@ let refreshing = null;
 /** Fires when the session ends, so the router can send the user to sign-in. */
 export const authEvents = new EventTarget();
 
+/**
+ * Every call this client makes, newest first.
+ *
+ * The point of this app is to show what the API is doing, so the request log
+ * is part of the product rather than something to dig out of devtools. The
+ * inspector panel renders it; `apiEvents` fires whenever it changes.
+ */
+export const callLog = [];
+export const apiEvents = new EventTarget();
+
+const MAX_LOGGED_CALLS = 60;
+
+/** Tokens are stripped before anything reaches the log or the screen. */
+function redact(value) {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redact);
+
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    out[key] = /token|password/i.test(key) ? '<redacted>' : redact(entry);
+  }
+  return out;
+}
+
+function logCall(entry) {
+  callLog.unshift({ ...entry, at: new Date() });
+  if (callLog.length > MAX_LOGGED_CALLS) callLog.length = MAX_LOGGED_CALLS;
+  apiEvents.dispatchEvent(new Event('call'));
+}
+
+export function clearCallLog() {
+  callLog.length = 0;
+  apiEvents.dispatchEvent(new Event('call'));
+}
+
 function load() {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
@@ -119,11 +154,47 @@ async function send(path, { method = 'GET', body, auth = true } = {}) {
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (auth && session) headers.Authorization = `Bearer ${session.accessToken}`;
 
-  return fetch(BASE + path, {
+  const started = performance.now();
+  let response;
+  try {
+    response = await fetch(BASE + path, {
+      method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch (error) {
+    logCall({
+      method,
+      path: BASE + path,
+      status: 0,
+      ms: Math.round(performance.now() - started),
+      request: redact(body),
+      response: { error: String(error) },
+    });
+    throw error;
+  }
+
+  // Read the body here and hand callers a clone, so the log can show the
+  // payload without consuming the stream they still need.
+  const elapsed = Math.round(performance.now() - started);
+  let parsed = null;
+  const copy = response.clone();
+  try {
+    parsed = response.status === 204 ? null : await copy.json();
+  } catch {
+    parsed = null;
+  }
+
+  logCall({
     method,
-    headers,
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    path: BASE + path,
+    status: response.status,
+    ms: elapsed,
+    request: redact(body),
+    response: redact(parsed),
   });
+
+  return response;
 }
 
 /**

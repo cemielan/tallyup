@@ -50,7 +50,7 @@ as a production assumption — free-tier terms are Cloudflare's to change.**
 | Resource | Free limit | What that means for Tallyup |
 |---|---|---|
 | Requests | 100,000/day (~3M/month), reset 00:00 UTC | Roughly 1 request/second sustained, all day, every day. For a portfolio demo hit by recruiters and your own testing, this is enormous headroom. |
-| CPU time per request | **10ms** | This is the tightest real constraint in the whole stack. Most Workers use ~1-2ms; heavier auth/parsing work typically lands 10-20ms — meaning a naive implementation can blow the free budget. Concretely: **password hashing and the `simplifyDebts` loop are the two places to watch.** Use a WebCrypto-native, moderate-cost hashing approach (see Security doc) and keep the settlement algorithm's group-size assumption realistic (§ NFR-202 caps it at 50 members — an O(n log n) sort well within budget at that size). Load-test this specific path before shipping. |
+| CPU time per request | **10ms**, and not raisable on this plan | This is the tightest real constraint in the whole stack. Most Workers use ~1-2ms; heavier auth/parsing work typically lands 10-20ms — meaning a naive implementation can blow the free budget. Concretely: **password hashing and the `simplifyDebts` loop are the two places to watch.** Use a WebCrypto-native, moderate-cost hashing approach (see Security doc) and keep the settlement algorithm's group-size assumption realistic (§ NFR-202 caps it at 50 members — an O(n log n) sort well within budget at that size). Load-test this specific path before shipping. |
 | Memory | 128MB per isolate | Not a practical constraint for this workload. |
 | Subrequests | 50 per request | Watch this if a single request needs several D1 queries — batch queries where possible instead of looping individual `SELECT`s. |
 | Burst rate | 1,000 requests/minute | Relevant to the rate-limiter design — the platform itself will hard-stop above this regardless of your own limits. |
@@ -70,10 +70,19 @@ bill:
 |---|---|
 | Sustained traffic near 100k requests/day | Workers Paid is $5/month flat, includes 10M requests — a 100x headroom jump for $5. Not urgent; only relevant if this stops being a portfolio project and gets real usage. |
 | D1 write budget becomes a bottleneck for rate-limit counters | Move to Durable Objects, which gives a per-key counter with no database round trip (requires Workers Paid, $5/month). The counters already batch into one upsert per request, so there is no cheaper software fix left. |
-| A group exceeds 50 members and `simplifyDebts` risks the 10ms CPU budget | Cap group size at the API layer (return a clear validation error) rather than let a request silently fail with Error 1102. |
+| A group exceeds 50 members and `simplifyDebts` risks the 10ms CPU budget | Cap group size at the API layer (return a clear validation error) rather than let a request silently fail with Error 1102. Implemented, and covered by `test/scale.test.ts`. |
+| Password hashing needs to be stronger than 4,000 PBKDF2 iterations | Workers Paid, $5/month. It makes `limits.cpu_ms` configurable, which is the only thing standing between this project and an OWASP-grade iteration count. See Security §2 for the measured cost curve. |
+| A single group's ledger grows past roughly 10,000 split rows | Netting is O(rows) and measured at ~4ms for 10,000 rows, so the ceiling is real but distant. The fix is a stored running balance invalidated on expense write, not a faster loop — see the `ponytail:` note on `netBalances` in `src/ledger.ts`. |
 
 ## 4. Trade-offs and known limitations
 
+- **D1 binds at most 100 parameters per statement**, and each statement in a
+  `batch` counts separately. A row of `expense_splits` binds four, so a
+  single insert holds 25 rows while a group may have 50 members — every one
+  of whom can share an expense. `src/ledger.ts` chunks the write for exactly
+  this reason; without it, an expense shared by a large group failed
+  outright. This was found by `test/scale.test.ts`, not in production, which
+  is what that test is for.
 - **SQLite (D1), not Postgres.** No advanced Postgres features (window
   functions are limited, no native `JSONB`, no `LISTEN/NOTIFY`). For this
   app's schema (users, groups, expenses, splits) this is not a real

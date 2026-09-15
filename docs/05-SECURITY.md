@@ -22,6 +22,20 @@ balances with the seriousness that implies.
 
 ## 2. Authentication
 
+> **Benchmark result (recorded as this section requires).** Measured inside
+> the Workers runtime by `test/cpu-budget.test.ts`: PBKDF2-SHA256 costs
+> ~3.5 ms at 4,000 iterations, ~8 ms at 10,000, and ~63 ms at 100,000. The
+> Free plan allows **10 ms of CPU per request and does not let that be
+> raised** (`limits.cpu_ms` is Paid-only, verified against Cloudflare's
+> limits page). The shipped count is therefore **4,000**, which is far below
+> OWASP's current guidance of 600,000 for PBKDF2-SHA256. This is a real
+> weakness, not a judgement that weak hashing is fine: it is the most this
+> plan tier can afford. Workers Paid ($5/month) lifts the CPU cap and makes
+> 600,000 affordable, and because each stored hash records its own iteration
+> count, raising it is backward compatible. An earlier revision of this
+> project shipped 100,000 — six times over budget, which would have failed
+> every login with Error 1102.
+
 - **MUST** hash passwords before storage. Use a WebCrypto-native
   algorithm since Workers can't run native (non-WASM) Node addons like
   the common `argon2` package. Concretely: **PBKDF2-SHA256 via

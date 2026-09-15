@@ -30,5 +30,17 @@ export default defineConfig({
   ],
   test: {
     setupFiles: ['./test/setup.ts'],
+    coverage: {
+      // Istanbul, not V8: the Workers pool runs tests inside workerd, where
+      // V8 coverage is not exposed to the host.
+      provider: 'istanbul',
+      reporter: ['text-summary', 'html', 'lcov'],
+      include: ['src/**/*.ts', 'packages/*/src/**/*.ts'],
+      // NFR-501 applies to the service/domain layer, not to thin HTTP glue,
+      // so route handlers and the generated OpenAPI document are excluded
+      // and the threshold below is measured against real logic.
+      exclude: ['src/routes/**', 'src/openapi.ts', 'src/types.ts', 'src/index.ts'],
+      thresholds: { statements: 80, branches: 80, functions: 80, lines: 80 },
+    },
   },
 });

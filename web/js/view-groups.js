@@ -1,22 +1,21 @@
 import * as api from './api.js';
 import {
   alertBox,
-  confirmAction,
+  avatar,
   emptyState,
   field,
-  formatDate,
   h,
   openModal,
+  relativeDate,
   render,
   skeleton,
   toast,
   withPending,
 } from './ui.js';
 
-/** The group list: everything the signed-in user belongs to, plus the two
- *  ways in -- create one, or join someone else's with an invite code. */
+/** The full group list, and the two ways in: create one, or join with a code. */
 export async function groupsView(root) {
-  const body = h('div', { class: 'card__body--flush' }, skeleton(3));
+  const body = h('div');
 
   render(
     root,
@@ -26,20 +25,20 @@ export async function groupsView(root) {
       h(
         'div',
         { class: 'page-head__title' },
-        h('h1', null, 'Your groups'),
-        h('span', { class: 'page-head__sub' }, 'Shared expenses, one group at a time.'),
+        h('h1', null, 'Groups'),
+        h('span', { class: 'page-head__sub' }, 'Every shared ledger you belong to.'),
       ),
       h(
         'div',
         { class: 'row' },
         h(
           'button',
-          { class: 'btn btn--secondary', type: 'button', onClick: () => joinDialog(reload) },
+          { class: 'btn btn--secondary', type: 'button', onClick: () => joinGroupDialog(reload) },
           'Join with code',
         ),
         h(
           'button',
-          { class: 'btn', type: 'button', onClick: () => createDialog(reload) },
+          { class: 'btn', type: 'button', onClick: () => createGroupDialog(reload) },
           'New group',
         ),
       ),
@@ -48,7 +47,7 @@ export async function groupsView(root) {
   );
 
   async function reload() {
-    render(body, skeleton(3));
+    render(body, h('div', { class: 'card__body' }, skeleton(3)));
     try {
       const { data } = await api.listGroups();
       render(body, data.length === 0 ? empty() : list(data));
@@ -58,25 +57,21 @@ export async function groupsView(root) {
   }
 
   function empty() {
-    return h(
-      'div',
-      { class: 'card__body--flush' },
-      emptyState({
-        icon: '🧾',
-        title: 'No groups yet',
-        body: 'Create a group for a trip, a flatshare, or a dinner — then invite the others.',
-        action: h(
-          'button',
-          {
-            class: 'btn',
-            type: 'button',
-            style: { marginBlockStart: '0.5rem' },
-            onClick: () => createDialog(reload),
-          },
-          'Create your first group',
-        ),
-      }),
-    );
+    return emptyState({
+      icon: '🧾',
+      title: 'No groups yet',
+      body: 'Create a group for a trip, a flatshare or a dinner — then invite the others.',
+      action: h(
+        'button',
+        {
+          class: 'btn',
+          type: 'button',
+          style: { marginBlockStart: '0.75rem' },
+          onClick: () => createGroupDialog(reload),
+        },
+        'Create your first group',
+      ),
+    });
   }
 
   function list(groups) {
@@ -87,6 +82,7 @@ export async function groupsView(root) {
         h(
           'a',
           { class: 'linkcard', href: `#/groups/${group.id}` },
+          avatar(group.name),
           h(
             'div',
             { class: 'list__main' },
@@ -96,7 +92,7 @@ export async function groupsView(root) {
               { class: 'list__meta' },
               group.role === 'owner' ? 'You own this group' : 'Member',
               ' · joined ',
-              formatDate(group.joinedAt),
+              relativeDate(group.joinedAt),
             ),
           ),
           group.role === 'owner' && h('span', { class: 'badge badge--accent' }, 'Owner'),
@@ -113,7 +109,8 @@ function describe(error) {
   return error instanceof api.ApiError ? error.message : 'Could not reach the API.';
 }
 
-function createDialog(onDone) {
+/** Shared by the dashboard and the group list, so both stay in step. */
+export function createGroupDialog(onDone) {
   const nameInput = h('input', {
     class: 'input',
     type: 'text',
@@ -122,7 +119,6 @@ function createDialog(onDone) {
     placeholder: 'Bali Trip',
   });
   const errorSlot = h('div');
-
   const submit = h('button', { class: 'btn', type: 'submit' }, 'Create group');
 
   const form = h(
@@ -170,21 +166,21 @@ function createDialog(onDone) {
     ],
   });
 
-  // The submit button lives in the footer, outside the form element, so wire
-  // it up explicitly rather than relying on implicit submission.
+  // The submit button lives in the dialog footer, outside the form, so it
+  // is wired up explicitly rather than relying on implicit submission.
   submit.addEventListener('click', () => form.requestSubmit());
   nameInput.focus();
 }
 
-function joinDialog(onDone) {
+export function joinGroupDialog(onDone) {
   const codeInput = h('input', {
-    class: 'input',
+    class: 'input mono',
     type: 'text',
     required: true,
     placeholder: 'A1B2-C3D4-E5F6-G7H8',
     autocapitalize: 'characters',
     spellcheck: false,
-    style: { fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' },
+    style: { letterSpacing: '0.06em' },
   });
   const errorSlot = h('div');
   const submit = h('button', { class: 'btn', type: 'submit' }, 'Join group');
@@ -207,7 +203,9 @@ function joinDialog(onDone) {
           const message =
             error instanceof api.ApiError && error.code === 'NOT_FOUND'
               ? 'That invite code is not valid. Check it and try again.'
-              : describe(error);
+              : error instanceof api.ApiError && error.code === 'ALREADY_MEMBER'
+                ? 'You are already in this group.'
+                : describe(error);
           render(errorSlot, alertBox(message));
         }
       },
@@ -215,7 +213,7 @@ function joinDialog(onDone) {
     field({
       label: 'Invite code',
       input: codeInput,
-      hint: 'Ask a member for the code. Case does not matter.',
+      hint: 'Ask a member for the code. Case and spacing do not matter.',
     }),
     errorSlot,
   );
@@ -236,5 +234,3 @@ function joinDialog(onDone) {
   submit.addEventListener('click', () => form.requestSubmit());
   codeInput.focus();
 }
-
-export { confirmAction };
