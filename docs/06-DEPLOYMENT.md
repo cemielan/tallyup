@@ -1,161 +1,168 @@
 # Deployment
 
-Target: `git clone` to a running local instance in under 10 minutes
-(NFR-303). This doc is the thing that promise is measured against —
-keep it accurate as the project evolves.
+## 1. Prerequisites
 
-## 1. Prerequisites (all free)
+- Node.js 20 or newer.
+- A Cloudflare account (free). No payment card is needed.
+- `npx wrangler login` done once on your machine. Check with
+  `npx wrangler whoami`.
 
-- Node.js 20+
-- A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free, no
-  card required for the Workers Free plan)
-- A [GitHub account](https://github.com) (free, for CI/CD and public
-  repo hosting)
-- The Wrangler CLI: `npm install -g wrangler`
-
-## 2. Local setup
+## 2. Local development
 
 ```bash
 git clone <your-repo-url>
 cd tallyup
 npm install
 
-# Authenticate Wrangler with your Cloudflare account (opens a browser)
-wrangler login
-
-# Create the D1 database (one-time, per Cloudflare account)
-wrangler d1 create tallyup-db
-# Copy the returned database_id into wrangler.toml under [[d1_databases]]
-
-# Apply the schema locally
-wrangler d1 migrations apply tallyup-db --local
-
-# Copy the example env file and fill in a local JWT secret
-cp .dev.vars.example .dev.vars
-# Generate a secret: openssl rand -base64 32
-
-# Run it
-npm run dev
+npm run db:migrate:local     # create the local D1 schema
+npm run dev:api              # builds the PWA, then API + PWA on http://localhost:8787
 ```
 
-Local dev runs on Miniflare (Cloudflare's local Workers runtime) — this
-is not a Node approximation, it's the same isolate model as production,
-which is exactly why local behavior around things like the 10ms CPU
-budget is meaningfully representative (see Architecture §4).
+That is a complete local instance: open <http://localhost:8787>.
 
-## 3. Verifying the flow (NFR-304)
+For UI work with hot reload, run Vite as well, in a second terminal:
 
 ```bash
-# Register
-curl -X POST http://localhost:8787/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
-
-# Login
-curl -X POST http://localhost:8787/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
-# → save the accessToken from the response
-
-# Create a group
-curl -X POST http://localhost:8787/v1/groups \
-  -H "Authorization: Bearer <accessToken>" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Bali Trip"}'
-
-# ...add an expense, then fetch the settlement plan:
-curl http://localhost:8787/v1/groups/<groupId>/settlements/suggested \
-  -H "Authorization: Bearer <accessToken>"
+npm run dev                  # http://localhost:5173, proxies /v1 to :8787
 ```
 
-The full version of this (with every step filled in) belongs in the
-README once the API is built — this doc has the shape, the README has
-the copy-pasteable reality.
+Two things to know:
+
+- `predev` and `prebuild` run `scripts/copy-ocr.mjs`, which copies
+  Tesseract's files into `web/public/ocr/` (gitignored). If scanning
+  fails locally with a 404 on `/ocr/...`, run it by hand.
+- The service worker registers only in production builds. That is why
+  `dev:api` serves the built app, so you can test offline behaviour there.
+
+### Coming from the old account-based schema
+
+The migrations were reset with the revamp, and `0000_init.sql` now creates
+the shares tables. A local database that already applied the *old*
+`0000_init.sql` will look up to date to Wrangler while missing every new
+table. Delete the local state and migrate again:
+
+```bash
+rm -rf .wrangler/state/v3/d1
+npm run db:migrate:local
+```
+
+### Checks
+
+```bash
+npm run typecheck        # tsc (Worker) + svelte-check (PWA), warnings fail
+npm test                 # API in the Workers runtime + browser logic under Node
+npm run test:coverage    # same, with the 80% floor (NFR-501) enforced
+npm run build            # PWA into ./dist
+```
+
+## 3. Configuration
+
+| Where | What |
+|---|---|
+| `wrangler.toml` `[vars]` | `ENVIRONMENT` only. |
+| `wrangler.toml` `[triggers]` | Daily sweep at 03:00 UTC. It is set in both the top-level and `[env.production]` blocks, because environments do not inherit triggers. |
+| `wrangler.toml` `[assets]` | `./dist`, produced by `npm run build`. |
+| Secrets | None. The Worker holds no key that could read user data. |
 
 ## 4. Production deployment
 
-### One-time setup
+### Step 1: create the D1 database
 
 ```bash
-# Create the production D1 database (or reuse the one from step 2 —
-# your call whether local dev and production share a database instance;
-# for a portfolio project sharing is fine, just be aware seed/test data
-# will be visible in the "real" deployment)
-wrangler d1 migrations apply tallyup-db --remote
-
-# Set production secrets (never in wrangler.toml, never in git)
-wrangler secret put JWT_SECRET
+npx wrangler d1 create tallyup-db
 ```
 
-### Deploying
+Paste the printed `database_id` into **both** D1 blocks in `wrangler.toml`:
+`[[d1_databases]]` and `[[env.production.d1_databases]]`. Both ship with the
+placeholder `REPLACE_WITH_YOUR_D1_DATABASE_ID`, and a deploy that still has
+it fails at bind time.
+
+Local development and production share this one database unless you create
+a second one for production. Sharing is fine while you are the only user;
+just remember that events you create in development are visible in
+production.
+
+### Step 2: apply migrations to the remote database
 
 ```bash
-wrangler deploy
+npm run db:migrate:remote
 ```
 
-That's it — no server to provision, no container to build, no cold
-start to wait out on the first request after deploy (Architecture §1).
+Wrangler lists pending migrations and asks before it writes. This is the
+only step that changes data, and the only one `wrangler rollback` will not
+undo.
 
-### Custom domain (optional)
+### Step 3: deploy
 
-If you own a domain already on Cloudflare, attaching it to the Worker
-costs nothing extra beyond whatever you already pay for the domain
-itself — add a route in the Cloudflare dashboard under
-Workers → your worker → Triggers → Custom Domains.
+```bash
+npm run typecheck && npm test
+npm run deploy               # = npm run build && wrangler deploy --env production
+```
 
-## 5. CI/CD (GitHub Actions)
+**Always deploy with `--env production`** (the `deploy` script does it for
+you). Both configs use `name = "tallyup"`, so a bare `wrangler deploy`
+overwrites the same Worker with `ENVIRONMENT = "development"`.
 
-Two workflows, both free for public repositories:
+### Step 4: verify
 
-**`.github/workflows/ci.yml`** — runs on every PR:
-1. `npm ci`
-2. `npm run lint`
-3. `npm run typecheck`
-4. `npm test` (Vitest against the Workers runtime pool)
+```bash
+BASE=https://tallyup.<your-subdomain>.workers.dev
 
-This is what NFR-404 requires as a merge gate — configure branch
-protection on `main` to require this workflow to pass.
+curl -s $BASE/health                                    # {"status":"ok","environment":"production"}
+curl -s $BASE/v1/openapi.json | head -c 200             # OpenAPI served
+curl -sI $BASE/ | grep -i content-security-policy       # _headers applied to the PWA
+curl -s -X POST $BASE/v1/shares -H 'Content-Type: application/json' \
+  -d '{"ciphertext":"c21va2U","iv":"AAAAAAAAAAAAAAAA"}'  # 201: D1 bound, migrations applied
+```
 
-**`.github/workflows/deploy.yml`** — runs on merge to `main`:
-1. Same checks as CI (never deploy something that didn't pass CI, even
-   if it somehow got merged)
-2. `wrangler deploy` using [Cloudflare's official `wrangler-action`](https://github.com/cloudflare/wrangler-action),
-   authenticated via a `CLOUDFLARE_API_TOKEN` stored as a GitHub Actions
-   secret (create a scoped token in the Cloudflare dashboard — Workers
-   Edit permission only, not a global API key).
+Then open the site on a phone and run one full event: create it, scan a
+receipt, share it, open the link in a private window, claim a payment, and
+confirm it.
 
-## 6. Monitoring usage against free-tier limits
+A `500` on the POST almost always means the remote migrations were not
+applied.
 
-Cloudflare's dashboard (Workers → your worker → Metrics) shows requests,
-CPU time percentiles, and errors for free. Check this periodically
-against the budget table in `docs/02-ARCHITECTURE.md` §3 — specifically
-watch:
+## 5. CI/CD
 
-- **p99 CPU time** — if it's creeping toward 10ms, that's the signal to
-  profile before it becomes an Error 1102 in production, not after.
-- **KV write count** — the tightest free-tier number in the whole stack
-  (1,000/day). If the rate limiter's write pattern is wrong, this is
-  where it'll show up first.
+- `.github/workflows/ci.yml` runs on every PR and every push to `main`:
+  typecheck, build, tests with coverage, then `npm audit` (report only).
+- `.github/workflows/deploy.yml` runs on every push to `main`. It repeats
+  the checks, builds, applies remote migrations and deploys with
+  `--env production`.
+  - It needs repository secrets `CLOUDFLARE_API_TOKEN` (permissions:
+    Workers Scripts Edit, D1 Edit) and `CLOUDFLARE_ACCOUNT_ID`.
+  - It needs a GitHub environment named `production`.
+
+## 6. Rollback
+
+```bash
+npx wrangler deployments list --env production
+npx wrangler rollback <deployment-id> --env production
+```
+
+Rollback restores code and assets, not data. Keep migrations
+backward-compatible: add columns rather than renaming them. Then the
+previous version still runs against the new schema.
 
 ## 7. Backups
 
-D1 has no automatic point-in-time backup on the free tier. Set up a
-simple periodic export instead:
+The data is ciphertext the operator cannot read, and it expires after 30
+days, so a backup protects availability, not content. To take one:
 
 ```bash
-wrangler d1 export tallyup-db --remote --output=backup-$(date +%F).sql
+npx wrangler d1 export tallyup-db --remote --env production --output backup-$(date +%F).sql
 ```
 
-Run this manually before any risky migration, and consider a scheduled
-GitHub Actions job (using a `schedule` trigger, still free) that exports
-and uploads to a free object store (Cloudflare R2's free tier — 10GB —
-is the natural choice since it's the same account) on a weekly cadence
-once real data exists worth protecting.
+`backup-*.sql` is gitignored. D1 also offers point-in-time restore
+(Time Travel) from the Cloudflare dashboard.
 
-## 8. Rollback
+## 8. Monitoring
 
-`wrangler deployments list` shows recent deployments;
-`wrangler rollback <deployment-id>` reverts the Worker code instantly
-(this does not undo a database migration — schema rollbacks need their
-own down-migration, written and tested alongside the up-migration, not
-improvised during an incident).
+Workers observability is enabled in `wrangler.toml`. In the dashboard,
+watch:
+
+- **4xx/5xx rates on `/v1/shares`.** A rise in `422` usually means a client
+  build is sending a stale shape.
+- **D1 rows written per day.** Every API request writes one rate-limit
+  counter, so this is the free-tier number that moves first.
+- **Cron trigger runs.** A failing sweep shows up as storage growth.

@@ -1,80 +1,68 @@
+import { drizzle } from 'drizzle-orm/d1';
+import { inArray, lt } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { ApiError } from './errors';
-import { RATE_LIMITS, rateLimit, requireAuth, withDb } from './middleware';
+import { RATE_LIMITS, rateLimit, withDb } from './middleware';
 import { docsPage, openApiDocument } from './openapi';
-import authRoutes from './routes/auth';
-import expenseRoutes from './routes/expenses';
-import groupRoutes from './routes/groups';
-import settlementRoutes from './routes/settlements';
-import userRoutes from './routes/users';
-import type { AppEnv } from './types';
+import shareRoutes from './routes/shares';
+import * as schema from './schema';
+import type { AppEnv, Bindings } from './types';
 
 const app = new Hono<AppEnv>();
 
 app.use('*', secureHeaders());
 
 /**
- * An explicit origin allow-list, never `*`: these routes carry bearer
- * tokens, so any origin being allowed to read their responses would let a
- * hostile page act as the user (docs/05-SECURITY.md §6).
+ * Any origin may call the API (FR-401). That is safe here because nothing
+ * about a request is ambient: there are no cookies, and the only credential
+ * -- an edit token -- has to be attached explicitly by code that already
+ * holds it. Another site's page gains nothing it could not get with curl
+ * (docs/05-SECURITY.md §5).
  */
-app.use('*', async (c, next) => {
-  const allowed = c.env.CORS_ORIGINS.split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-
-  return cors({
-    origin: (origin) => (allowed.includes(origin) ? origin : null),
-    allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+app.use(
+  '/v1/*',
+  cors({
+    origin: '*',
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Authorization', 'Content-Type'],
     maxAge: 86400,
-    credentials: false,
-  })(c, next);
-});
+  }),
+);
 
 /**
- * 64 KiB is far more than any endpoint here needs -- the largest legitimate
- * body is an expense with fifty participants -- and it stops a large upload
- * from spending CPU on parsing before validation can reject it.
+ * 64 KiB comfortably fits the largest legal body (a share at its ciphertext
+ * cap) and stops a large upload from spending CPU on parsing before
+ * validation can reject it.
  */
-app.use('*', bodyLimit({ maxSize: 64 * 1024 }));
+app.use(
+  '*',
+  bodyLimit({
+    maxSize: 64 * 1024,
+    onError: (c) =>
+      c.json(new ApiError('PAYLOAD_TOO_LARGE', 'Request body is too large').toResponseBody(), 413),
+  }),
+);
 
 app.use('*', withDb);
 
 app.get('/health', (c) => c.json({ status: 'ok', environment: c.env.ENVIRONMENT }));
-
 app.get('/v1/openapi.json', (c) => c.json(openApiDocument(new URL('/v1', c.req.url).toString())));
 app.get('/docs', (c) => c.html(docsPage('/v1/openapi.json')));
 
-// Auth routes manage their own protection: register/login/refresh are public
-// by necessity and rate-limited per IP instead.
-app.route('/v1/auth', authRoutes);
+app.use('/v1/shares', rateLimit(RATE_LIMITS.api));
+app.use('/v1/shares/*', rateLimit(RATE_LIMITS.api));
+app.route('/v1/shares', shareRoutes);
 
-// Everything else requires a valid access token, and is rate-limited per
-// user rather than per IP so that one noisy network cannot lock out
-// everyone behind it.
-for (const prefix of ['/v1/users', '/v1/groups', '/v1/expenses', '/v1/settlements']) {
-  app.use(prefix, requireAuth, rateLimit(RATE_LIMITS.api));
-  app.use(`${prefix}/*`, requireAuth, rateLimit(RATE_LIMITS.api));
-}
-
-app.route('/v1/users', userRoutes);
-app.route('/v1/groups', groupRoutes);
-app.route('/v1/expenses', expenseRoutes);
-app.route('/v1/settlements', settlementRoutes);
-
-app.notFound((c) =>
-  c.json({ error: { code: 'NOT_FOUND', message: 'No such endpoint' } }, 404),
-);
+app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'No such endpoint' } }, 404));
 
 /**
- * One error envelope for every failure (NFR-302). Anything that is not a
- * deliberate `ApiError` is a bug, so it is logged server-side and reported
- * to the client as a bare 500 -- a stack trace or a database message in a
- * response body is free reconnaissance.
+ * One error envelope for every failure. Anything that is not a deliberate
+ * `ApiError` is a bug, so it is logged server-side and reported to the
+ * client as a bare 500 -- a stack trace or a database message in a response
+ * body is free reconnaissance.
  */
 app.onError((error, c) => {
   if (error instanceof ApiError) {
@@ -94,4 +82,28 @@ app.onError((error, c) => {
   );
 });
 
-export default app;
+/**
+ * Delete lapsed shares, their claims, and expired rate-limit windows. Run
+ * daily by the cron trigger in wrangler.toml; reads already treat an expired
+ * share as missing, so the sweep only reclaims storage.
+ */
+export async function sweepExpired(db: D1Database, now = Date.now()) {
+  const orm = drizzle(db, { schema });
+  const expired = orm
+    .select({ id: schema.shares.id })
+    .from(schema.shares)
+    .where(lt(schema.shares.expiresAt, now));
+
+  await orm.batch([
+    orm.delete(schema.shareClaims).where(inArray(schema.shareClaims.shareId, expired)),
+    orm.delete(schema.shares).where(lt(schema.shares.expiresAt, now)),
+    orm.delete(schema.rateLimits).where(lt(schema.rateLimits.expiresAt, now)),
+  ]);
+}
+
+export default {
+  fetch: app.fetch,
+  async scheduled(_controller: ScheduledController, env: Bindings) {
+    await sweepExpired(env.DB);
+  },
+} satisfies ExportedHandler<Bindings>;

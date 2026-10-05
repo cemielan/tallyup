@@ -4,16 +4,15 @@ import * as v from './validation';
 
 /**
  * The OpenAPI document is generated from the very Zod schemas the routes
- * validate with (NFR-301), so a schema change cannot drift from the
- * published contract -- there is no second definition to forget to update.
- * Only the path/method/response metadata is written out here, because that
- * lives in the router, not in a schema.
+ * validate with, so a schema change cannot drift from the published
+ * contract. Only the path/method/response metadata is written out here,
+ * because that lives in the router, not in a schema.
  */
 
 const jsonSchema = (schema: z.ZodType) =>
   z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' });
 
-const bearer = [{ bearerAuth: [] }];
+const editToken = [{ editToken: [] }];
 
 const errorResponse = (description: string) => ({
   description,
@@ -27,21 +26,14 @@ const jsonBody = (schema: z.ZodType) => ({
 
 const ok = (description: string) => ({ description });
 
-const paginationParams = [
-  { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
-  {
-    name: 'pageSize',
-    in: 'query',
-    schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
-  },
-];
-
 const pathParam = (name: string) => ({
   name,
   in: 'path',
   required: true,
-  schema: { type: 'string', format: 'uuid' },
+  schema: { type: 'string', pattern: '^[A-Za-z0-9_-]{22}$' },
 });
+
+const shareId = pathParam('shareId');
 
 let cached: object | undefined;
 
@@ -52,16 +44,22 @@ export function openApiDocument(serverUrl: string): object {
     openapi: '3.1.0',
     info: {
       title: 'Tallyup API',
-      version: '0.1.0',
+      version: '1.0.0',
       description:
-        'Track shared group expenses and compute the minimum set of payments needed to settle up. ' +
-        'All monetary amounts are integers in minor currency units (1050 = $10.50).',
+        'Store and share end-to-end encrypted split-bill events. The server only ever sees ' +
+        'ciphertext: clients encrypt the event document with AES-256-GCM before upload and keep ' +
+        'the key in the share link fragment. See docs/04-API-SPEC.md for the document format and ' +
+        'the encryption scheme a client must implement.',
       license: { name: 'MIT' },
     },
     servers: [{ url: serverUrl }],
     components: {
       securitySchemes: {
-        bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+        editToken: {
+          type: 'http',
+          scheme: 'bearer',
+          description: 'The edit token returned once by POST /shares.',
+        },
       },
       schemas: {
         Error: {
@@ -79,223 +77,68 @@ export function openApiDocument(serverUrl: string): object {
             },
           },
         },
-        Split: jsonSchema(v.splitSchema),
       },
     },
     paths: {
-      '/auth/register': {
+      '/shares': {
         post: {
-          summary: 'Register a new account',
-          requestBody: jsonBody(v.registerSchema),
+          summary: 'Create a share from an encrypted event document',
+          requestBody: jsonBody(v.createShareSchema),
           responses: {
-            201: ok('Account created'),
-            409: errorResponse('EMAIL_TAKEN'),
+            201: ok('Created. The response carries the edit token; it is never shown again'),
             422: errorResponse('VALIDATION_ERROR'),
             429: errorResponse('RATE_LIMITED'),
           },
         },
       },
-      '/auth/login': {
-        post: {
-          summary: 'Exchange credentials for an access and refresh token',
-          requestBody: jsonBody(v.loginSchema),
-          responses: {
-            200: ok('Session issued'),
-            401: errorResponse('INVALID_CREDENTIALS'),
-            429: errorResponse('RATE_LIMITED'),
-          },
-        },
-      },
-      '/auth/refresh': {
-        post: {
-          summary: 'Rotate a refresh token for a new session',
-          requestBody: jsonBody(v.refreshSchema),
-          responses: {
-            200: ok('Session issued; the previous refresh token is now revoked'),
-            401: errorResponse('INVALID_REFRESH_TOKEN'),
-          },
-        },
-      },
-      '/auth/logout': {
-        post: {
-          summary: 'Revoke one refresh token',
-          security: bearer,
-          requestBody: jsonBody(v.refreshSchema),
-          responses: { 204: ok('Revoked'), 401: errorResponse('UNAUTHENTICATED') },
-        },
-      },
-      '/auth/logout-all': {
-        post: {
-          summary: 'Revoke every refresh token for the caller',
-          security: bearer,
-          responses: { 204: ok('Revoked'), 401: errorResponse('UNAUTHENTICATED') },
-        },
-      },
-      '/users/me': {
+      '/shares/{shareId}': {
         get: {
-          summary: 'Fetch the caller profile',
-          security: bearer,
-          responses: { 200: ok('The caller'), 401: errorResponse('UNAUTHENTICATED') },
+          summary: 'Fetch a share ciphertext',
+          parameters: [shareId],
+          responses: { 200: ok('The ciphertext and its version'), 404: errorResponse('NOT_FOUND') },
         },
-        patch: {
-          summary: 'Update the caller display name',
-          security: bearer,
-          requestBody: jsonBody(v.updateMeSchema),
-          responses: { 200: ok('Updated'), 422: errorResponse('VALIDATION_ERROR') },
-        },
-      },
-      '/groups': {
-        get: {
-          summary: 'List groups the caller belongs to',
-          security: bearer,
-          parameters: paginationParams,
-          responses: { 200: ok('Paginated groups') },
-        },
-        post: {
-          summary: 'Create a group; the creator becomes its owner',
-          security: bearer,
-          requestBody: jsonBody(v.createGroupSchema),
-          responses: { 201: ok('Group created'), 422: errorResponse('VALIDATION_ERROR') },
-        },
-      },
-      '/groups/join': {
-        post: {
-          summary: 'Join a group with an invite code',
-          security: bearer,
-          requestBody: jsonBody(v.joinGroupSchema),
+        put: {
+          summary: 'Replace the ciphertext (compare-and-swap on version)',
+          security: editToken,
+          parameters: [shareId],
+          requestBody: jsonBody(v.updateShareSchema),
           responses: {
-            200: ok('Joined'),
-            404: errorResponse('Invite code is not valid'),
-            409: errorResponse('ALREADY_MEMBER'),
-            429: errorResponse('RATE_LIMITED'),
-          },
-        },
-      },
-      '/groups/{groupId}': {
-        get: {
-          summary: 'Group detail, including the member list',
-          security: bearer,
-          parameters: [pathParam('groupId')],
-          responses: {
-            200: ok('Group detail'),
-            404: errorResponse('Not found, or the caller is not a member'),
-          },
-        },
-      },
-      '/groups/{groupId}/invite/rotate': {
-        post: {
-          summary: 'Replace the invite code, invalidating the old one',
-          security: bearer,
-          parameters: [pathParam('groupId')],
-          responses: { 200: ok('New invite code'), 403: errorResponse('FORBIDDEN') },
-        },
-      },
-      '/groups/{groupId}/members/{userId}': {
-        delete: {
-          summary: 'Remove a member, or leave the group by naming yourself',
-          security: bearer,
-          parameters: [pathParam('groupId'), pathParam('userId')],
-          responses: {
-            204: ok('Removed'),
+            200: ok('Updated; the expiry moves forward 30 days'),
+            401: errorResponse('UNAUTHENTICATED'),
             403: errorResponse('FORBIDDEN'),
-            409: errorResponse('NONZERO_BALANCE'),
-          },
-        },
-      },
-      '/groups/{groupId}/expenses': {
-        get: {
-          summary: 'List a group expenses, newest first',
-          security: bearer,
-          parameters: [pathParam('groupId'), ...paginationParams],
-          responses: { 200: ok('Paginated expenses') },
-        },
-        post: {
-          summary: 'Record an expense',
-          security: bearer,
-          parameters: [pathParam('groupId')],
-          requestBody: jsonBody(v.createExpenseSchema),
-          responses: {
-            201: ok('Expense created, with resolved per-person shares'),
-            422: errorResponse('VALIDATION_ERROR or NON_MEMBER_PARTICIPANT'),
-          },
-        },
-      },
-      '/expenses/{expenseId}': {
-        get: {
-          summary: 'Expense detail with its full split breakdown',
-          security: bearer,
-          parameters: [pathParam('expenseId')],
-          responses: { 200: ok('Expense detail'), 404: errorResponse('NOT_FOUND') },
-        },
-        patch: {
-          summary: 'Edit an expense (creator or group owner only)',
-          security: bearer,
-          parameters: [pathParam('expenseId')],
-          requestBody: jsonBody(v.updateExpenseSchema),
-          responses: {
-            200: ok('Updated; balances recompute from the new values'),
-            403: errorResponse('FORBIDDEN'),
-            422: errorResponse('VALIDATION_ERROR'),
+            409: errorResponse('VERSION_CONFLICT'),
           },
         },
         delete: {
-          summary: 'Soft-delete an expense (creator or group owner only)',
-          security: bearer,
-          parameters: [pathParam('expenseId')],
+          summary: 'Delete a share and its claims',
+          security: editToken,
+          parameters: [shareId],
           responses: { 204: ok('Deleted'), 403: errorResponse('FORBIDDEN') },
         },
       },
-      '/groups/{groupId}/balances': {
+      '/shares/{shareId}/claims': {
         get: {
-          summary: 'Net balance per member, per currency',
-          security: bearer,
-          parameters: [pathParam('groupId')],
-          responses: { 200: ok('One entry per non-zero (user, currency) pair') },
-        },
-      },
-      '/groups/{groupId}/settlements/suggested': {
-        get: {
-          summary: 'Minimum set of payments that settles the group',
-          security: bearer,
-          parameters: [pathParam('groupId')],
-          responses: { 200: ok('Computed fresh from current balances; not a stored resource') },
-        },
-      },
-      '/groups/{groupId}/settlements': {
-        get: {
-          summary: 'List settlements for a group',
-          security: bearer,
-          parameters: [pathParam('groupId'), ...paginationParams],
-          responses: { 200: ok('Paginated settlements') },
+          summary: 'List pending payment claims (ciphertext)',
+          parameters: [shareId],
+          responses: { 200: ok('Claims, oldest first') },
         },
         post: {
-          summary: 'Propose a settlement from the caller to another member',
-          security: bearer,
-          parameters: [pathParam('groupId')],
-          requestBody: jsonBody(v.createSettlementSchema),
+          summary: 'Add an encrypted "I paid" claim',
+          parameters: [shareId],
+          requestBody: jsonBody(v.createClaimSchema),
           responses: {
-            201: ok('Pending settlement created; balances are unchanged until confirmed'),
-            422: errorResponse('VALIDATION_ERROR or NON_MEMBER_PARTICIPANT'),
+            201: ok('Claim stored'),
+            409: errorResponse('CLAIM_LIMIT'),
+            429: errorResponse('RATE_LIMITED'),
           },
         },
       },
-      '/settlements/{settlementId}/confirm': {
-        post: {
-          summary: 'Confirm receipt of a payment (receiving party only)',
-          security: bearer,
-          parameters: [pathParam('settlementId')],
-          responses: {
-            200: ok('Confirmed; a balancing expense now exists'),
-            404: errorResponse('Not found, or the caller is not the recipient'),
-          },
-        },
-      },
-      '/settlements/{settlementId}/decline': {
-        post: {
-          summary: 'Decline a claimed payment (receiving party only)',
-          security: bearer,
-          parameters: [pathParam('settlementId')],
-          responses: { 200: ok('Declined; balances are unchanged') },
+      '/shares/{shareId}/claims/{claimId}': {
+        delete: {
+          summary: 'Remove a claim after confirming or declining it',
+          security: editToken,
+          parameters: [shareId, pathParam('claimId')],
+          responses: { 204: ok('Removed'), 404: errorResponse('NOT_FOUND') },
         },
       },
     },

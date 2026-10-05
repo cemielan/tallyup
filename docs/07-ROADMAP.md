@@ -1,129 +1,96 @@
 # Roadmap
 
-Build in this order. Each phase lists its acceptance criteria — treat
-these as Definition of Done, not suggestions. Don't start a phase until
-the previous one's criteria are all met (Project Brief, Ground Rule 1).
+Each phase lists its acceptance criteria. Treat them as the Definition of
+Done.
 
-## Phase 0 — Foundation library (already done)
+## Before the revamp: account-based API (retired)
 
-`debt-simplify` exists, is published (or ready to publish) as its own
-npm package, has passing tests, and is not to be modified as part of
-this project except through its own repo/release process (FR-501/502).
+Tallyup started as an account-based REST API: users, JWT auth, groups,
+invite codes, server-side ledgers and settlements, plus a vanilla-JS
+reference client. That version was never deployed to production.
 
-**Acceptance:** `npm install debt-simplify` works from the published
-package (or a local `file:` reference during development), and Tallyup
-never contains a local reimplementation of `calculateBalances` or
-`simplifyDebts`.
+It was removed for the PWA revamp, because "no sign-up" and "the server
+cannot read your data" cannot both hold when the server computes balances.
+It remains in git history before the revamp commit. The arithmetic library,
+`debt-simplify`, carried over unchanged.
 
-## Phase 1 — MVP: auth, groups, equal-split expenses, read-only settlement
+## R0: Docs
 
-Scope: FR-101 through FR-108, FR-201 through FR-206, FR-301 (equal split
-only — defer exact/percentage/shares to Phase 2), FR-304, FR-305,
-FR-401, FR-402, FR-501.
+- [x] Brief, requirements, architecture, data model, API spec, security,
+      deployment and roadmap rewritten for the encrypted-share design.
 
-Security: every `MUST` in `docs/05-SECURITY.md` §2 (auth), §3
-(authorization), §5 (input validation) — rate limiting (§4) can be a
-simple fixed-window placeholder in Phase 1 and hardened in Phase 2.
+## R1: Shares API
 
-**Acceptance criteria:**
-- [ ] A user can register, log in, and refresh their session.
-- [ ] A user can create a group and invite others via code.
-- [ ] A user can add an equal-split expense and see it in the group's
-      expense list.
-- [ ] `GET /balances` and `GET /settlements/suggested` return correct
-      results for a multi-person, multi-expense scenario (write this as
-      an actual integration test with a scripted scenario, not just
-      manual curl checks).
-- [ ] Every group/expense route rejects a non-member with `404`
-      (NFR-102 — write a test specifically for this, per group).
-- [ ] Deployed to Cloudflare Workers, reachable over HTTPS, `$0` cost so
-      far.
-- [ ] CI runs lint + typecheck + tests on every PR (NFR-404).
+- [x] `shares`, `share_claims` and `rate_limits` tables, with one fresh
+      migration.
+- [x] Seven endpoints: create, read, update (compare-and-swap), delete, and
+      list / add / remove claims.
+- [x] Edit token hashed at rest. Per-IP rate limits. Ciphertext and claim
+      caps. 64 KiB body limit with the error envelope.
+- [x] 30-day expiry honoured on read. Daily cron sweep.
+- [x] CORS open to any origin. OpenAPI generated from Zod.
+- [x] Integration tests in the Workers runtime cover every route, its
+      authorization failures, conflicts, expiry and the sweep.
 
-## Phase 2 — Full splits, settlement confirmation, hardened security
+## R2: PWA core
 
-Scope: FR-302 (exact/percentage/shares), FR-306 through FR-309, FR-403
-through FR-405, FR-207.
+- [x] Svelte 5 + Vite, served from the same Worker. Manifest, icons and
+      service worker.
+- [x] AES-256-GCM in the browser. Key in the fragment. Host link imported
+      and stripped from the address bar.
+- [x] Device-local history. Draft autosave. Persistent-storage request.
+- [x] Event editor: people, bank details (optional holder), bills, items,
+      assignees, tax / service / discount.
+- [x] Receipt with printing animation, torn edge, PAID stamps and confetti.
+      Reduced motion respected.
+- [x] Native share sheet with a clipboard fallback. Host link backup.
 
-Security: the production-grade rate limiter design from §4 (KV
-write-budget-aware, not fixed-window-per-request), refresh token
-rotation-with-reuse-detection (§2), CORS allow-list finalized for
-whatever frontend(s) will actually call this.
+## R3: Payments
 
-**Acceptance criteria:**
-- [ ] All four split types work and have integration tests, including
-      a test that an incorrectly-summed `exact`/`percentage` split
-      returns a clean `422`, not a 500.
-- [ ] Editing or deleting an expense correctly changes subsequent
-      balance calculations (test this explicitly — it's the kind of bug
-      that's invisible until someone edits something).
-- [ ] A settlement can be proposed, confirmed by the receiving party,
-      and correctly zeroes out (or reduces) the relevant balance.
-- [ ] A settlement can be declined without affecting balances.
-- [ ] Rate limits are enforced and return `429` with `Retry-After`; KV
-      write count under real test traffic is checked against the
-      1,000/day budget (Architecture §3) and confirmed sustainable.
-- [ ] OpenAPI spec (NFR-301) is generated and served, and matches the
-      API Spec doc — if they've drifted, fix the doc, not just the code.
-- [ ] Test coverage for the service/domain layer is above 80% (NFR-501).
+- [x] Viewer picks who they are and sees what they owe, to whom, and the
+      receiver's bank details with a copy button.
+- [x] "I've paid" sends an encrypted claim. Host confirms or declines.
+      Host can also mark paid or undo.
+- [x] Reset share link (new key, claims cleared). Delete event.
 
-## Phase 3 — Polish, multi-currency, demo consumer
+## R4: OCR
 
-Scope: FR-405 (multi-currency, if not already done in Phase 2 — pull it
-forward if straightforward), remaining `SHOULD`/`MAY` items worth doing.
+- [x] Tesseract.js self-hosted, LSTM-only, `ind` + `eng`. Runs only when
+      someone scans.
+- [x] Receipt parser for Indonesian formats (`35.000`, `,00`, PB1 / PPN,
+      service, diskon), with unit tests on realistic OCR text.
+- [x] Mismatch warning against the printed total.
+- [ ] **Field test on real receipts.** The parser is tested on synthetic
+      OCR text and on a rendered receipt in a headless browser. It has not
+      been tried against a pile of real, crumpled thermal receipts. Collect
+      ten or more, record the hit rate, and tune `receipt-parser.ts` from
+      the failures.
 
-**Acceptance criteria:**
-- [ ] Multi-currency groups keep balances/settlements separate per
-      currency, verified with a test group holding both USD and IDR
-      expenses.
-- [ ] README has the full working `curl` flow (NFR-304) and a clear
-      "why this exists / what it demonstrates" section for anyone
-      landing on the repo cold (recruiters, in particular).
-- [x] A reference consumer exists, proving the "different frontends, same
-      backend" story from the Project Brief. **Delivered beyond this
-      criterion, deliberately:** the acceptance bar here was a throwaway
-      HTML+fetch page, and what was built is a designed, responsive,
-      accessible client covering every endpoint (`web/`). That was an
-      explicit request, not scope creep that happened by accident — but it
-      is recorded here so the gap between "what the roadmap asked for" and
-      "what exists" is visible rather than quietly assumed.
+## R5: Public API
 
-      It is also worth being honest about the ordering: this was built
-      before Phase 2's remaining acceptance criteria (service-layer
-      coverage above 80%, and the CPU benchmark behind NFR-202 and
-      Security §2) were met, which contradicts Ground Rule 1 in the
-      Project Brief. Those two items remain the real outstanding work.
-- [ ] Dependabot (or equivalent) is enabled and green (NFR-503).
-- [ ] A backup export has actually been run once, following
-      `docs/06-DEPLOYMENT.md` §7, so the process is proven, not just
-      documented.
+- [x] The encryption scheme and document format are specified in
+      `docs/04-API-SPEC.md` §1. A curl + Node walkthrough creates an event
+      that the PWA opens.
+- [ ] A small published client helper (`seal` / `open` + types), so
+      third parties do not copy `crypto.ts` by hand. Build it when a
+      second client actually exists.
 
-## Known gaps, carried forward
+## Open items
 
-These are open and deliberately recorded rather than discovered later:
-
-### Closed
-
-| Was | Outcome |
+| Gap | Why it matters |
 |---|---|
-| PBKDF2 iteration count unbenchmarked (NFR-202, Security §2) | Benchmarked in the Workers runtime. The shipped 100,000 cost ~63 ms against a hard 10 ms budget — **every login and registration would have failed with Error 1102**. Now 4,000 (~3.5 ms), held by `test/cpu-budget.test.ts`, with the weakness and the $5/month fix recorded in Security §2. |
-| No coverage measurement (NFR-501) | `npm run test:coverage` enforces an 80% floor on the service layer and runs in CI. Currently 92% statements, 84% branches. |
-| No load test of the balances path (NFR-201/202) | `test/scale.test.ts` seeds a full 50-member group and measures read and CPU separately. It found two real defects: an expense shared by more than 25 people failed on D1's 100-parameter statement limit, and netting 10,000 split rows cost 12 ms of a 10 ms budget (now ~4 ms). |
-| Web client had no automated test | `test/web/money.test.ts` covers the money boundary and share allocation, and runs in CI. It found a further defect: an all-whitespace name rendered an empty avatar. |
+| UI rendering has no automated tests | The views were verified by driving the real app in headless Chrome, which is not wired into CI. Only the pure logic is covered in CI. |
+| Edge latency never measured | NFR-201 needs dashboard numbers after a deploy. Local numbers are not evidence. |
+| `_headers` behaviour checked in `wrangler dev` only | Check the CSP header on the deployed site (Deployment §4, step 4). |
+| iOS Safari not tested | Storage eviction, the share sheet and camera capture behave differently there. Test on a real iPhone, both in Safari and installed to the Home Screen. |
+| Backup never run | Run Deployment §7 once, so the process is proven. |
 
-### Still open
+## Later, if it earns its place
 
-| Gap | Requirement | Why it matters |
-|---|---|---|
-| The client's rendering has no automated coverage | — | The views are verified by driving the real app in a headless browser, which is not wired into CI. Only the pure money logic is covered automatically, so a regression in a view would be caught by a human, not the merge gate. |
-| p95 latency is measured locally, never at the edge | NFR-201 | The CPU numbers come from Miniflare on a dev machine. Edge hardware differs, and Cloudflare freezes timers in production, so the real figure has to come from the dashboard's CPU-time percentiles after a deploy. |
-
-## Explicitly deferred (not on this roadmap)
-
-- Password reset via email (FR-109) — needs an email-sending free tier
-  decision not yet made; revisit only if this project outgrows
-  portfolio status.
-- Real payment integration — out of scope permanently (Project Brief
-  non-goals).
-- Mobile app / polished frontend — out of scope for this repo
-  permanently; Phase 3's demo consumer is intentionally minimal.
+- Indonesian UI copy.
+- QRIS / e-wallet payment details.
+- Export the receipt as an image.
+- Cross-device history, using password-wrapped keys so the server stays
+  blind.
+- Multi-currency events (the library already supports
+  `simplifyDebtsMulti`).

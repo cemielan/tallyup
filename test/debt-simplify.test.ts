@@ -1,9 +1,9 @@
-import { DebtSimplifyError, calculateBalances, resolveSplit, simplifyDebts } from 'debt-simplify';
+import { DebtSimplifyError, calculateBalances, resolveSplit, simplifyDebts, simplifyDebtsMulti } from 'debt-simplify';
 import { describe, expect, it } from 'vitest';
 
-// These cover the library placeholder's own arithmetic. When the published
-// `debt-simplify` replaces it, this file is what proves the swap did not
-// change behavior.
+// The library's own suite. Tallyup's web tests exercise it through real
+// events; this file pins its contract, so a library change that alters
+// behavior fails here first.
 describe('resolveSplit', () => {
   it('never loses or invents a minor unit on an indivisible total', () => {
     const shares = resolveSplit(100, { type: 'equal', participants: ['a', 'b', 'c'] });
@@ -59,5 +59,59 @@ describe('simplifyDebts', () => {
 
   it('refuses balances that do not sum to zero', () => {
     expect(() => simplifyDebts({ alice: 100, bob: -50 })).toThrow(DebtSimplifyError);
+  });
+});
+
+describe('validation', () => {
+  const bad: Array<[string, () => unknown]> = [
+    ['non-integer total', () => resolveSplit(10.5, { type: 'equal', participants: ['a'] })],
+    ['zero total', () => resolveSplit(0, { type: 'equal', participants: ['a'] })],
+    ['empty equal split', () => resolveSplit(100, { type: 'equal', participants: [] })],
+    ['repeated participant', () => resolveSplit(100, { type: 'equal', participants: ['a', 'a'] })],
+    ['empty exact split', () => resolveSplit(100, { type: 'exact', amounts: {} })],
+    ['negative exact share', () => resolveSplit(100, { type: 'exact', amounts: { a: 150, b: -50 } })],
+    ['empty percentage split', () => resolveSplit(100, { type: 'percentage', percentages: {} })],
+    ['negative percentage', () => resolveSplit(100, { type: 'percentage', percentages: { a: 150, b: -50 } })],
+    ['empty shares split', () => resolveSplit(100, { type: 'shares', shares: {} })],
+    ['fractional share count', () => resolveSplit(100, { type: 'shares', shares: { a: 1.5 } })],
+    ['all-zero weights', () => resolveSplit(100, { type: 'shares', shares: { a: 0, b: 0 } })],
+    ['unknown split type', () => resolveSplit(100, { type: 'nope' } as never)],
+  ];
+
+  it.each(bad)('rejects %s', (_, run) => {
+    expect(run).toThrow(DebtSimplifyError);
+  });
+
+  it('applies the same checks on the exact fast path in calculateBalances', () => {
+    const exact = (amounts: Record<string, number>, amount = 100) => () =>
+      calculateBalances([{ paidBy: 'a', amount, split: { type: 'exact', amounts } }]);
+    expect(exact({ b: 100 }, 0)).toThrow(DebtSimplifyError);
+    expect(exact({ b: -1, c: 101 })).toThrow(DebtSimplifyError);
+    expect(exact({})).toThrow(DebtSimplifyError);
+    expect(exact({ b: 99 })).toThrow(DebtSimplifyError);
+  });
+
+  it('ignores inherited keys on the exact fast path', () => {
+    const amounts = Object.create({ inherited: 5 }) as Record<string, number>;
+    amounts.b = 100;
+    expect(calculateBalances([{ paidBy: 'a', amount: 100, split: { type: 'exact', amounts } }])).toEqual({
+      a: 100,
+      b: -100,
+    });
+  });
+
+  it('nets non-exact splits through resolveSplit', () => {
+    expect(
+      calculateBalances([{ paidBy: 'a', amount: 300, split: { type: 'shares', shares: { a: 1, b: 2 } } }]),
+    ).toEqual({ a: 200, b: -200 });
+  });
+});
+
+describe('simplifyDebtsMulti', () => {
+  it('settles each currency on its own', () => {
+    expect(simplifyDebtsMulti({ IDR: { a: 500, b: -500 }, USD: { b: 3, a: -3 } })).toEqual({
+      IDR: [{ from: 'b', to: 'a', amount: 500 }],
+      USD: [{ from: 'a', to: 'b', amount: 3 }],
+    });
   });
 });

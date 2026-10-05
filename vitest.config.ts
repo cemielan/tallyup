@@ -12,15 +12,8 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: './wrangler.toml' },
       miniflare: {
-        // Local-only test values. The real secret comes from
-        // `wrangler secret put` and never appears in the repo.
         bindings: {
-          JWT_SECRET: 'test-only-secret-not-used-anywhere-else-0123456789',
           ENVIRONMENT: 'test',
-          CORS_ORIGINS: 'http://localhost:5173',
-          // Deliberately low so the suite is not dominated by key
-          // derivation; production uses the wrangler.toml value.
-          PBKDF2_ITERATIONS: '1000',
           // The real migration files, so the schema under test is the schema
           // that ships -- not a second definition kept in sync by hand.
           TEST_MIGRATIONS: migrations,
@@ -29,6 +22,7 @@ export default defineConfig({
     }),
   ],
   test: {
+    include: ['test/*.test.ts'],
     setupFiles: ['./test/setup.ts'],
     coverage: {
       // Istanbul, not V8: the Workers pool runs tests inside workerd, where
@@ -36,10 +30,9 @@ export default defineConfig({
       provider: 'istanbul',
       reporter: ['text-summary', 'html', 'lcov'],
       include: ['src/**/*.ts', 'packages/*/src/**/*.ts'],
-      // NFR-501 applies to the service/domain layer, not to thin HTTP glue,
-      // so route handlers and the generated OpenAPI document are excluded
-      // and the threshold below is measured against real logic.
-      exclude: ['src/routes/**', 'src/openapi.ts', 'src/types.ts', 'src/index.ts'],
+      // NFR-501 applies to logic, not to the generated OpenAPI document or
+      // type declarations.
+      exclude: ['src/openapi.ts', 'src/types.ts'],
       thresholds: { statements: 80, branches: 80, functions: 80, lines: 80 },
     },
   },

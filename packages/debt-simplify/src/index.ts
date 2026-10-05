@@ -1,16 +1,14 @@
 /**
- * LOCAL PLACEHOLDER for the published `debt-simplify` package.
+ * `debt-simplify`: the split and settlement arithmetic, as a zero-dependency
+ * workspace package.
  *
- * FR-501 requires that all debt-simplification math lives in the published
- * library and is never reimplemented inside the API layer. The published
- * package was not available when this repo was scaffolded, so this workspace
- * package stands in for it: same module name, same import path, same call
- * signatures. Point the dependency in the root package.json at the real
- * version and delete this directory -- no API-layer code should need to
- * change, because nothing outside this package knows how the math works.
+ * FR-501 requires that all of this math lives here and is never
+ * reimplemented elsewhere. The only consumer is the PWA's
+ * `web/src/lib/split.ts`, which runs in the browser: event data is
+ * end-to-end encrypted, so the server never sees an amount to compute with.
  *
- * If the real package's signatures differ from the ones below, adjust the
- * thin call sites in `src/balances.ts` only.
+ * The name is not published on npm. If it ever is, adopting the published
+ * version is a dependency change and nothing more.
  */
 
 /** A participant's identity. Opaque to this library. */
@@ -230,7 +228,7 @@ export function calculateBalances(expenses: ExpenseInput[]): Balances {
  * against the largest creditor. Produces at most n-1 transfers for n people
  * holding a non-zero balance, which is the practical optimum -- the exactly
  * minimal set is NP-hard, and the difference does not show up at the group
- * sizes this app permits (NFR-202 caps groups at 50 members).
+ * sizes this app permits (events cap at 30 people).
  */
 export function simplifyDebts(balances: Balances): Transfer[] {
   const debtors: Array<[ParticipantId, number]> = [];
@@ -270,8 +268,8 @@ export function simplifyDebts(balances: Balances): Transfer[] {
 }
 
 /**
- * Per-currency settlement. Currencies are never netted against each other
- * (FR-405) -- each one settles independently.
+ * Per-currency settlement. Currencies are never netted against each other --
+ * each one settles independently. Unused while events are IDR-only.
  */
 export function simplifyDebtsMulti(
   balancesByCurrency: Record<string, Balances>,

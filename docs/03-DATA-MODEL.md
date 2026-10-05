@@ -1,165 +1,116 @@
-# Data Model
+# Data model
 
-All monetary amounts are **integers in minor currency units** (cents,
-sen, etc.) — never floats — matching the `debt-simplify` library's own
-convention. This keeps the API and the library speaking the same
-language with zero conversion at the boundary.
+Two layers: what the **server** stores (opaque), and what the **browser**
+encrypts (the event document). Only the browser ever sees the second.
 
-## 1. Entity relationship overview
+## 1. Server tables (D1)
 
+Defined in `src/schema.ts`; migration in `migrations/0000_init.sql`.
+Timestamps are unix milliseconds.
+
+### `shares`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | text PK | 16 random bytes, base64url (22 chars). |
+| `ciphertext` | text | AES-256-GCM output, base64url. ≤ 48,000 chars. |
+| `iv` | text | 12-byte nonce, base64url (16 chars). Fresh on every save. |
+| `edit_token_hash` | text | SHA-256 hex of the edit token. The token itself is never stored. |
+| `version` | integer | Starts at 1, +1 per update. Used for compare-and-swap. |
+| `created_at`, `updated_at` | integer | |
+| `expires_at` | integer | `updated_at + 30 days`. Indexed for the sweep. |
+
+### `share_claims`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | text PK | Same format as a share id. |
+| `share_id` | text FK → `shares.id` | Indexed. Deleted with the share. |
+| `ciphertext`, `iv` | text | An encrypted claim, ≤ 2,000 chars. |
+| `created_at` | integer | |
+
+At most 50 unanswered claims per share. The host deletes a claim once it is
+confirmed or declined.
+
+### `rate_limits`
+
+| Column | Type | Notes |
+|---|---|---|
+| `key` | text PK | `scope:ip:windowStart`. |
+| `count` | integer | |
+| `expires_at` | integer | Swept daily. |
+
+### Lifecycle
+
+- Reads treat `expires_at < now` as not found, so expiry is exact even
+  before the sweep runs.
+- The cron trigger (`0 3 * * *`) deletes expired shares, their claims, and
+  expired rate-limit windows (`sweepExpired` in `src/index.ts`).
+- Deleting a share deletes its claims first, in one batch.
+
+## 2. The event document (encrypted)
+
+Defined and validated by `web/src/lib/doc.ts`. Money is **whole rupiah**
+(integers). There are no floats anywhere in the document.
+
+```ts
+{
+  v: 1,
+  title: string,                  // 1–80
+  currency: 'IDR',
+  createdAt: number,
+  people: [{                      // 1–30
+    id: string,                   // [A-Za-z0-9_-]{1,24}
+    name: string,                 // 1–40
+    payment?: {
+      bankName: string,           // 1–40
+      accountNumber: string,      // digits, 4–24
+      accountHolder?: string      // ≤ 60, shown only when non-empty
+    }
+  }],
+  bills: [{                       // ≤ 10
+    id: string,
+    name: string,
+    paidBy: personId,
+    items: [{                     // ≤ 60
+      name: string,               // ≤ 80
+      price: number,              // unit price, 0–50,000,000
+      qty: number,                // 1–99
+      for: personId[]             // [] = everyone
+    }],
+    tax: number, service: number, discount: number   // as printed
+  }],
+  settlements: [{                 // confirmed payments, ≤ 200
+    id: string, from: personId, to: personId, amount: number, at: number
+  }]
+}
 ```
-users ──< group_members >── groups
-  │                            │
-  │                            ├──< expenses >── expense_splits
-  │                            │        │
-  └──< refresh_tokens          │        └── (paidBy: users.id)
-                                └──< settlements
+
+Validation also checks that every `paidBy`, `for`, `from` and `to` names a
+person in the event, that person ids are unique, and that nobody pays
+themselves. Unknown fields are rejected at every level.
+
+### Claim document (encrypted)
+
+```ts
+{ from: personId, to: personId, amount: number, at: number }
 ```
 
-- A `user` can belong to many `groups` (via `group_members`).
-- A `group` has many `expenses`; each `expense` has many `expense_splits`
-  (one row per participant's share).
-- A `settlement` is a confirmed record that a suggested payment
-  (from `simplifyDebts`) was actually made — it is **not** the same as
-  an `expense`, but confirming one creates a corresponding balancing
-  expense so `calculateBalances` stays the single source of truth for
-  "who owes what" (see FR-403, FR-408).
+## 3. How balances are derived
 
-## 2. Tables
+Balances are never stored. They are recomputed from the document on every
+render (`web/src/lib/split.ts`):
 
-### `users`
+1. **Per item:** `price × qty`, split equally among `for` (or everyone).
+2. **Per bill:** `total = subtotal + tax + service − discount`, then the
+   whole total is split in proportion to each person's item subtotal. This
+   is one `resolveSplit(total, { type: 'shares' })` call, so charges follow
+   consumption and the result sums to the exact total.
+3. **Per event:** each valid bill becomes an expense paid by `paidBy`. Each
+   settlement becomes an expense the payer covered entirely for the
+   recipient. `calculateBalances` nets them, and `simplifyDebts` returns the
+   fewest transfers.
 
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | text (UUID) | primary key |
-| `email` | text | unique, not null |
-| `password_hash` | text | not null — see Security doc for algorithm |
-| `display_name` | text | not null |
-| `created_at` | integer (unix ms) | not null |
-
-Index: unique index on `email` (needed for login lookup and to enforce
-uniqueness — do both with one index, not two).
-
-### `refresh_tokens`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | text (UUID) | primary key |
-| `user_id` | text | FK → `users.id`, not null |
-| `token_hash` | text | not null — store a hash of the token, never the raw token (see Security doc) |
-| `expires_at` | integer (unix ms) | not null |
-| `revoked_at` | integer (unix ms) | nullable |
-| `created_at` | integer (unix ms) | not null |
-
-Index: on `user_id` (needed for "revoke all sessions", FR-106) and on
-`token_hash` (needed for the refresh lookup on every `POST /auth/refresh`
-call).
-
-### `groups`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | text (UUID) | primary key |
-| `name` | text | not null |
-| `invite_code` | text | unique, not null |
-| `created_by` | text | FK → `users.id`, not null |
-| `created_at` | integer (unix ms) | not null |
-
-Index: unique index on `invite_code` (looked up on every join attempt —
-this is also an anti-enumeration surface, see Security doc).
-
-### `group_members`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `group_id` | text | FK → `groups.id`, not null |
-| `user_id` | text | FK → `users.id`, not null |
-| `role` | text | not null, `'owner' \| 'member'` |
-| `joined_at` | integer (unix ms) | not null |
-
-Primary key: composite (`group_id`, `user_id`).
-Index: on `user_id` alone (needed for "list my groups", FR-203 — the
-composite PK alone doesn't serve a user_id-only lookup efficiently).
-
-### `expenses`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | text (UUID) | primary key |
-| `group_id` | text | FK → `groups.id`, not null |
-| `paid_by` | text | FK → `users.id`, not null |
-| `created_by` | text | FK → `users.id`, not null — may differ from `paid_by` |
-| `amount` | integer | not null, > 0 |
-| `currency` | text | not null, ISO 4217 code, e.g. `"USD"` |
-| `description` | text | not null |
-| `split_type` | text | not null, `'equal' \| 'exact' \| 'percentage' \| 'shares'` |
-| `is_settlement` | boolean | not null, default false — true for the balancing expense created by confirming a settlement (FR-403), so the UI can distinguish "real" expenses from settlement records |
-| `created_at` | integer (unix ms) | not null |
-| `updated_at` | integer (unix ms) | not null |
-| `deleted_at` | integer (unix ms) | nullable — soft delete, see note below |
-
-Index: on `group_id` (list expenses, FR-304 — this is the hottest query
-path in the app) and on `(group_id, created_at)` composite for the
-paginated "newest first" ordering to avoid a sort at read time.
-
-**Soft delete rationale:** expenses are financial records; hard-deleting
-them destroys audit history a real settlement app should keep. Deleted
-expenses are excluded from `calculateBalances` input but retained in the
-table. `DELETE /v1/expenses/:id` sets `deleted_at`, it does not `DROP` the
-row.
-
-### `expense_splits`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | text (UUID) | primary key |
-| `expense_id` | text | FK → `expenses.id`, not null |
-| `user_id` | text | FK → `users.id`, not null |
-| `amount` | integer | not null — this participant's resolved share in minor units, already computed by `calculateBalances`'s split logic at write time |
-
-Index: on `expense_id` (needed every time an expense is read or a
-group's balances are recomputed).
-
-**Why store resolved amounts, not the raw split config:** if a
-`percentage` split's underlying percentages were re-interpreted after
-the fact (e.g. a library bug fix changes rounding behavior), historical
-expenses would silently change value. Storing the resolved integer
-amounts at creation time makes every expense immutable in effect, which
-is what FR-308 ("balances are always derived, never independently
-mutated") implicitly requires for *historical* correctness, while still
-deriving current balances live by summing these rows.
-
-### `settlements`
-
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | text (UUID) | primary key |
-| `group_id` | text | FK → `groups.id`, not null |
-| `from_user_id` | text | FK → `users.id`, not null |
-| `to_user_id` | text | FK → `users.id`, not null |
-| `amount` | integer | not null |
-| `currency` | text | not null |
-| `status` | text | not null, `'pending' \| 'confirmed' \| 'declined'` |
-| `confirming_expense_id` | text | FK → `expenses.id`, nullable — set once confirmed (FR-403) |
-| `created_at` | integer (unix ms) | not null |
-| `resolved_at` | integer (unix ms) | nullable |
-
-Index: on `(group_id, status)` — the settlements list/confirmation flow
-always filters by group and usually by pending status.
-
-## 3. Query patterns to design around
-
-These are the shapes NFR-204 ("index every FK lookup and list filter")
-is protecting:
-
-1. **Get a group's current balances** — read all non-deleted expenses
-   and their splits for a group, feed into `calculateBalances`. This is
-   the single most performance-sensitive read (§NFR-201/202) — it's an
-   `O(expenses × avg splits per expense)` scan, so the `(group_id,
-   created_at)` index on `expenses` and the `expense_id` index on
-   `expense_splits` both matter directly.
-2. **List my groups** — `group_members` filtered by `user_id`.
-3. **Authorization check on every group/expense route** — "is this
-   caller a member of this group?" — a `group_members` lookup by
-   composite PK, which is already indexed by definition. This check
-   MUST run before any group-scoped data is read or written (NFR-102).
+A bill with no items, or with a discount larger than itself, is marked
+invalid and excluded from the totals. It is never allowed to produce
+negative debt.

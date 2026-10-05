@@ -1,7 +1,7 @@
 # Cloudflare Workers configuration.
 #
-# Secrets NEVER live in this file (SECURITY §7). Local dev reads them from
-# .dev.vars (gitignored); production uses `wrangler secret put`.
+# The Worker holds no secrets: event data is encrypted in the browser and
+# the server stores only ciphertext (docs/05-SECURITY.md §2).
 
 name = "tallyup"
 main = "src/index.ts"
@@ -14,34 +14,24 @@ compatibility_flags = ["nodejs_compat"]
 [observability]
 enabled = true
 
-# The reference web client, served as static assets from this same Worker.
+# The PWA, built by `npm run build` into ./dist and served as static assets
+# from this same Worker. Same origin as the API, one deploy, and static
+# asset requests do not count against the Worker request budget
+# (docs/02-ARCHITECTURE.md §3). Security headers for these files come from
+# web/public/_headers, because asset responses never pass through Hono.
 #
-# Same origin as the API, so the browser never makes a cross-origin request
-# and the CORS allow-list below applies only to third-party clients. Static
-# asset requests are also free and do not count against the Worker request
-# budget (docs/02-ARCHITECTURE.md §3).
-#
-# `not_found_handling` is deliberately left at its default: turning on
-# single-page-application mode would rewrite every unmatched path to
-# index.html, including a mistyped `/v1/...`, hiding real 404s from API
-# clients. The client uses hash routing instead, which never reaches here.
+# `not_found_handling` is left at its default: single-page-application mode
+# would rewrite a mistyped `/v1/...` to index.html. The app uses hash
+# routing, which never reaches the server.
 [assets]
-directory = "./web"
+directory = "./dist"
 
-# Non-secret configuration. Override per environment.
+# Daily sweep of expired shares and rate-limit windows (src/index.ts).
+[triggers]
+crons = ["0 3 * * *"]
+
 [vars]
 ENVIRONMENT = "development"
-# Comma-separated CORS allow-list. Never "*" for authenticated routes
-# (SECURITY §6). Set the real origins of whatever frontend calls this.
-CORS_ORIGINS = "http://localhost:5173,http://localhost:3000"
-# PBKDF2 iteration count for new password hashes.
-#
-# Left unset on purpose: the shipped value is the benchmarked constant in
-# src/crypto.ts, so there is only one number to keep honest. Set this only to
-# override it -- for example after moving to Workers Paid, where the CPU
-# budget stops being 10 ms and a far higher count becomes affordable.
-# test/cpu-budget.test.ts is what proves whatever value is in force fits.
-# PBKDF2_ITERATIONS = "600000"
 
 [[d1_databases]]
 binding = "DB"
@@ -54,11 +44,13 @@ migrations_dir = "migrations"
 name = "tallyup"
 
 [env.production.assets]
-directory = "./web"
+directory = "./dist"
+
+[env.production.triggers]
+crons = ["0 3 * * *"]
 
 [env.production.vars]
 ENVIRONMENT = "production"
-CORS_ORIGINS = "https://REPLACE_WITH_YOUR_FRONTEND_ORIGIN"
 
 [[env.production.d1_databases]]
 binding = "DB"

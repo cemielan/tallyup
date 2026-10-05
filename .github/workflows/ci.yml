@@ -1,6 +1,6 @@
 name: CI
 
-# NFR-404: lint, typecheck and the full suite gate every pull request.
+# NFR-404: typecheck, build and the full suite gate every pull request.
 # Configure branch protection on `main` to require this workflow.
 on:
   pull_request:
@@ -23,9 +23,12 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run lint
-
+      # Worker under tsc, the PWA under svelte-check (warnings fail the build).
       - run: npm run typecheck
+
+      # The PWA must build: wrangler serves ./dist, and a broken bundle would
+      # otherwise only show up at deploy time.
+      - run: npm run build
 
       # Runs the suite with coverage so NFR-501's 80% service-layer floor is
       # enforced by the merge gate rather than checked by hand. The

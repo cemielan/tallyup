@@ -1,0 +1,19 @@
+{
+  // The PWA targets the DOM; the Worker under src/ targets the Workers
+  // runtime. Separate configs keep browser-only globals from typechecking
+  // inside the Worker and the reverse.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["vite/client"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte", "../test/web/**/*.ts"]
+}

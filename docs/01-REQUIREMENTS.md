@@ -1,110 +1,108 @@
 # Requirements
 
-Every requirement has a stable ID so it can be referenced from commits,
-PRs, and tests. `MUST` = blocks release of the phase it belongs to.
-`SHOULD` = strongly desired, can slip to the next phase with a documented
-reason. `MAY` = optional / nice-to-have.
+`MUST` is required for the phase it belongs to, `SHOULD` is expected unless
+there is a recorded reason not to, and `MAY` is optional.
 
-## 1. Functional Requirements
+## 1. Functional requirements
 
-### 1.1 Authentication & Account
+### Events and sharing
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-101 | A visitor MUST be able to register with an email and password. | MUST |
-| FR-102 | Passwords MUST be validated for minimum strength (length ≥ 10, not in a common-password blocklist) before hashing. | MUST |
-| FR-103 | A registered user MUST be able to log in and receive a short-lived access token and a longer-lived refresh token. | MUST |
-| FR-104 | A user MUST be able to refresh an expired access token using a valid, unexpired refresh token. | MUST |
-| FR-105 | A user MUST be able to log out, which revokes the refresh token used. | MUST |
-| FR-106 | A user MUST be able to log out of all sessions (revoke all their refresh tokens at once). | SHOULD |
-| FR-107 | A user MUST be able to fetch their own profile (`GET /v1/users/me`). | MUST |
-| FR-108 | A user SHOULD be able to update their display name. | SHOULD |
-| FR-109 | Password reset via emailed link MAY be added once an email-sending free tier is wired up (see Architecture). Out of scope for MVP — documented as a known gap, not silently missing. | MAY |
+| FR-101 | A visitor MUST be able to create an event (a title and at least one person) without an account. | MUST |
+| FR-102 | An event MUST support up to 30 people. Each person MAY carry payment details: bank name, account number (digits only) and an optional account holder name. The holder name is shown only when it is set. | MUST |
+| FR-103 | An event MUST support up to 10 bills. Each bill has a payer, items (name, unit price, quantity, who shared it; nobody selected means everyone), and tax, service and discount amounts as printed. | MUST |
+| FR-104 | Publishing MUST encrypt the event in the browser, upload only the ciphertext, and give the host a **view link** (to share) and a **host link** (to keep). | MUST |
+| FR-105 | The host MUST be able to edit and republish. Concurrent saves MUST NOT silently overwrite each other (compare-and-swap on a version). | MUST |
+| FR-106 | A share MUST expire 30 days after its last update. Expired shares MUST read as missing immediately and MUST be deleted by a daily sweep. | MUST |
+| FR-107 | The host MUST be able to reset the share link (re-encrypt under a new key, invalidating old links) and to delete the event. | MUST |
+| FR-108 | The host's event list MUST be kept on their device. The app MUST offer the host link as a backup, because losing local storage otherwise loses edit access. | MUST |
 
-### 1.2 Groups
-
-| ID | Requirement | Priority |
-|---|---|---|
-| FR-201 | A logged-in user MUST be able to create a group with a name. Creating a group makes the creator a member with an `owner` role. | MUST |
-| FR-202 | A group MUST support an invite mechanism: a shareable, unguessable invite code that adds the joining user as a `member`. | MUST |
-| FR-203 | A member MUST be able to list all groups they belong to. | MUST |
-| FR-204 | A member MUST be able to view a single group's details, including its member list. | MUST |
-| FR-205 | An `owner` MUST be able to remove a member from a group, provided that member has a zero balance (no outstanding debts either direction) at the time of removal. | MUST |
-| FR-206 | A member MUST be able to leave a group voluntarily, subject to the same zero-balance rule as FR-205. | MUST |
-| FR-207 | An `owner` SHOULD be able to rotate/regenerate the invite code (invalidating the old one) if it leaks. | SHOULD |
-
-### 1.3 Expenses
+### Receipt scanning
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-301 | A group member MUST be able to record an expense: amount, currency, who paid, a description, and a split. | MUST |
-| FR-302 | The API MUST support all four split types from the `debt-simplify` library: `equal`, `exact`, `percentage`, `shares`. | MUST |
-| FR-303 | Only group members MAY be named as payer or participant in an expense within that group. | MUST |
-| FR-304 | A member MUST be able to list a group's expenses, paginated, newest first. | MUST |
-| FR-305 | A member MUST be able to view a single expense's full detail (who paid, full split breakdown). | MUST |
-| FR-306 | The expense creator or the group `owner` MUST be able to edit an expense (amount, description, split). | MUST |
-| FR-307 | The expense creator or the group `owner` MUST be able to delete an expense. | MUST |
-| FR-308 | Editing or deleting an expense MUST recompute the group's balances — balances are always derived, never independently mutated. | MUST |
-| FR-309 | The API SHOULD support attaching a category/tag to an expense for filtering. | MAY |
+| FR-201 | Receipt OCR MUST run entirely in the browser. The image MUST NOT be uploaded anywhere. | MUST |
+| FR-202 | Scanned items MUST land in the normal bill editor for correction. When the receipt prints a total and the parsed bill does not match it, the editor MUST say so. | MUST |
+| FR-203 | Typing a bill by hand MUST always be possible. Scanning is a shortcut, never a requirement. | MUST |
 
-### 1.4 Balances & Settlements
+### Split and settle
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-401 | A member MUST be able to fetch a group's current net balances per person, computed via `calculateBalances`. | MUST |
-| FR-402 | A member MUST be able to fetch the group's simplified settlement plan (minimum transactions to zero everyone out), computed via `simplifyDebts`. | MUST |
-| FR-403 | A member MUST be able to mark a suggested settlement as paid, which records a settlement-confirmation expense so balances update accordingly. | MUST |
-| FR-404 | Settlement confirmation MUST require confirmation from the receiving party (the person being marked as "paid") before it's finalized — a payer can't unilaterally mark a debt settled. | SHOULD (MUST by Phase 2) |
-| FR-405 | Multi-currency groups MUST keep balances and settlements separate per currency (via `simplifyDebtsMulti`), never netted across currencies. | MUST |
+| FR-301 | A shared item MUST be split equally among the people who had it. Tax, service and discount MUST be spread in proportion to each person's item subtotal. Shares MUST sum to the bill total exactly, to the rupiah. | MUST |
+| FR-302 | The app MUST show each person's total and the fewest transfers that settle the event. | MUST |
+| FR-303 | A viewer MUST be able to say who they are and then see what they owe, to whom, and the receiver's payment details when set. | MUST |
+| FR-304 | A viewer MUST be able to send an "I paid" claim. The claim is encrypted like the event. | MUST |
+| FR-305 | The host MUST be able to confirm a claim (recording the payment in the event) or decline it. The host MAY also mark a payment directly, and undo one. A viewer can never mark their own debt paid. | MUST |
+| FR-306 | Multi-currency events MAY be added later. Until then, events are IDR only, in whole rupiah. | MAY |
 
-### 1.5 Library Boundary
-
-| ID | Requirement | Priority |
-|---|---|---|
-| FR-501 | All debt-simplification math MUST go through the published `debt-simplify` package — the API layer MUST NOT reimplement or fork that logic. | MUST |
-| FR-502 | If a bug or missing feature is found in `debt-simplify` while building Tallyup, it MUST be fixed in the library repo and released as a new version, then bumped in Tallyup — not patched around locally. | MUST |
-
-## 2. Non-Functional Requirements
-
-### 2.1 Security
+### Open API
 
 | ID | Requirement | Priority |
 |---|---|---|
-| NFR-101 | All requirements in `docs/05-SECURITY.md` marked MUST are non-negotiable and block phase completion. | MUST |
-| NFR-102 | No endpoint that reads or writes group/expense data may skip an authorization check that the caller is a member of that group. | MUST |
-| NFR-103 | No secret (JWT signing key, API tokens) may be committed to the repository at any point in its history. | MUST |
+| FR-401 | The shares API MUST accept calls from any origin and MUST publish an OpenAPI document (`/v1/openapi.json`) with an interactive reference (`/docs`). | MUST |
+| FR-402 | The event document format and the encryption scheme MUST be documented well enough for a third-party client to interoperate with the PWA (`docs/04-API-SPEC.md`). | MUST |
 
-### 2.2 Performance
-
-| ID | Requirement | Priority |
-|---|---|---|
-| NFR-201 | p95 response time for read endpoints (balances, list expenses, get group) MUST be under 200ms measured at the edge, excluding client network latency. | MUST |
-| NFR-202 | The `simplifyDebts` computation MUST complete within the platform's per-request CPU time budget for groups up to 50 members (see Architecture for the exact budget and why this cap exists). | MUST |
-| NFR-203 | List endpoints MUST be paginated (default page size 20, max 100) — no unbounded result sets. | MUST |
-| NFR-204 | Database queries MUST use indexes for every foreign-key lookup and every filter used in a list endpoint (see Data Model for the index list). | MUST |
-
-### 2.3 Usability / Developer Experience
+### The `debt-simplify` library
 
 | ID | Requirement | Priority |
 |---|---|---|
-| NFR-301 | The API MUST publish an OpenAPI 3.x spec, kept in sync with the actual route definitions (generated from the same Zod schemas used for validation, not hand-maintained separately). | MUST |
-| NFR-302 | Every error response MUST use one consistent JSON envelope (see API Spec §"Error format") — no endpoint returns a bare string or an ad hoc shape. | MUST |
-| NFR-303 | A new developer MUST be able to go from `git clone` to a running local instance in under 10 minutes following `docs/06-DEPLOYMENT.md`. | MUST |
-| NFR-304 | The README MUST include a working `curl` example for at least one full flow (register → create group → add expense → get settlement). | MUST |
+| FR-501 | All split and settlement math MUST go through the `debt-simplify` package. App code MUST NOT reimplement it. | MUST |
+| FR-502 | A bug or gap found in `debt-simplify` MUST be fixed in the package, with a test in `test/debt-simplify.test.ts`, not patched around at the call site. | MUST |
 
-### 2.4 Reliability & Cost
+### The app
 
 | ID | Requirement | Priority |
 |---|---|---|
-| NFR-401 | The deployed system MUST cost $0/month at the traffic levels defined in Architecture's "free-tier budget" table. | MUST |
-| NFR-402 | If projected usage would exceed a free-tier limit, this MUST be documented in `docs/02-ARCHITECTURE.md` §"Upgrade triggers" with the specific limit and the cheapest mitigation — not discovered by an outage. | MUST |
-| NFR-403 | The system SHOULD have zero cold-start latency for the API layer (a direct consequence of the platform choice in Architecture, not something to re-derive). | SHOULD |
-| NFR-404 | CI MUST run lint, typecheck, and the full test suite on every pull request before merge is allowed. | MUST |
+| FR-601 | The app MUST be an installable PWA (manifest, icons, service worker). After the first visit, it MUST open offline. | MUST |
+| FR-602 | The receipt MUST "print" with an animation. Confirmed payments MUST get a PAID stamp, and a fully settled event MUST celebrate. All motion MUST respect `prefers-reduced-motion`. | MUST |
+| FR-603 | The app MUST be mobile-first and support light and dark colour schemes. | MUST |
 
-### 2.5 Maintainability
+## 2. Non-functional requirements
+
+### Privacy and security
 
 | ID | Requirement | Priority |
 |---|---|---|
-| NFR-501 | Test coverage for business logic (everything under the service/domain layer, excluding thin HTTP handlers) MUST stay above 80%. | MUST |
-| NFR-502 | Every public API route MUST have at least one integration test covering the happy path and one covering an authorization failure. | MUST |
-| NFR-503 | Dependency vulnerability scanning (GitHub Dependabot or equivalent, free for public repos) MUST be enabled. | MUST |
+| NFR-101 | The server MUST NOT receive plaintext event data, keys or receipt images, by any route: requests, logs, or Referer headers. | MUST |
+| NFR-102 | Every `MUST` in `docs/05-SECURITY.md` blocks phase completion. | MUST |
+| NFR-103 | No secret may be committed. The Worker holds none. | MUST |
+
+### Performance
+
+| ID | Requirement | Priority |
+|---|---|---|
+| NFR-201 | p95 response time for `GET /v1/shares/:id` MUST be under 200 ms at the edge, excluding client network latency. | MUST |
+| NFR-202 | Every request MUST fit the Workers Free 10 ms CPU budget. With no server-side computation, this means validation and one or two D1 statements per request. | MUST |
+| NFR-203 | Initial JavaScript SHOULD stay under 100 KB gzipped. OCR assets (about 8 MB) MUST load only when someone scans. | SHOULD |
+
+### Developer experience and operations
+
+| ID | Requirement | Priority |
+|---|---|---|
+| NFR-301 | The OpenAPI document MUST be generated from the same Zod schemas the routes validate with. | MUST |
+| NFR-302 | Every error response MUST use the single JSON envelope in `docs/04-API-SPEC.md` §4. | MUST |
+| NFR-303 | A new developer MUST get from `git clone` to a running local instance in under 10 minutes using `docs/06-DEPLOYMENT.md`. | MUST |
+| NFR-401 | The deployed system MUST cost $0/month at the traffic in `docs/02-ARCHITECTURE.md` §3. | MUST |
+| NFR-402 | A projected free-tier overrun MUST be recorded in `docs/02-ARCHITECTURE.md` "Upgrade triggers", with its cheapest mitigation. | MUST |
+| NFR-404 | CI MUST typecheck, build and run the full suite on every pull request. | MUST |
+
+### Quality
+
+| ID | Requirement | Priority |
+|---|---|---|
+| NFR-501 | Coverage of `src/` and `packages/` MUST stay above 80% (statements, branches, functions, lines). | MUST |
+| NFR-502 | Every API route MUST have a happy-path test and an authorization-failure test, where it requires authorization. | MUST |
+| NFR-503 | Dependabot MUST be enabled. | MUST |
+| NFR-601 | Every control MUST have an accessible name. Focus MUST be visible. Touch targets MUST be at least 34 px (44 px for primary actions). | MUST |
+
+## 3. Deferred, not forgotten
+
+- **Indonesian-language UI.** The copy is English with Indonesian number and
+  date formats.
+- **QRIS or e-wallet payment details** alongside bank accounts.
+- **Exporting the receipt as an image** for chats that do not unfurl links.
+- **Push notifications** when a claim arrives. This needs a push service and
+  a subscription store, which means the server would hold something about
+  users.

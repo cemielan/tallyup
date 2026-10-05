@@ -1,13 +1,24 @@
 # Tallyup
 
-A REST API for tracking shared group expenses and working out the minimum set
-of payments that settles everyone up. Any frontend — web, mobile, CLI, a chat
-bot — can be built against it; the API is the deliverable.
+**Split the bill. Share one link. No app, no sign-up.**
 
-The settlement arithmetic itself lives in a separate zero-dependency library,
-[`debt-simplify`](#the-debt-simplify-dependency), consumed here as an ordinary
-npm dependency. Tallyup is the application around it: users, groups,
-persistence, auth, HTTP.
+Tallyup is a split-bill and debt-payment PWA:
+
+1. The host adds the people at the table, then scans the receipt or types it in.
+2. The host taps who had what and gets a link that "prints" a receipt.
+3. Friends open the link, see what they owe and where to transfer, and tap
+   **I've paid**.
+4. The host confirms each payment until the receipt reads **ALL SETTLED**.
+
+Two things make it different:
+
+- **The server can't read your events.** Everything is encrypted on the
+  device (AES-256-GCM), and the key lives only in the link's `#fragment`,
+  which browsers never send to a server.
+- **Receipt photos never leave the phone.** OCR runs in the browser.
+
+The sharing API is open. Any client that implements the documented
+encryption scheme can create and read Tallyup events.
 
 **Documentation:** start at [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md), then
 [requirements](docs/01-REQUIREMENTS.md), [architecture](docs/02-ARCHITECTURE.md),
@@ -15,252 +26,74 @@ persistence, auth, HTTP.
 [security](docs/05-SECURITY.md), [deployment](docs/06-DEPLOYMENT.md),
 [roadmap](docs/07-ROADMAP.md).
 
-## What this demonstrates
-
-- **A published library consumed by a real application** — the debt
-  arithmetic is a versioned dependency, not inlined logic.
-- **Security as a requirement, not a retrofit** — PBKDF2 password hashing
-  over WebCrypto, refresh-token rotation with reuse detection, a membership
-  check applied as middleware to every group-scoped route, strict Zod
-  validation that rejects unknown fields, per-IP and per-user rate limits.
-  See [`docs/05-SECURITY.md`](docs/05-SECURITY.md).
-- **A stack that genuinely costs nothing at this scale** — Cloudflare Workers
-  plus D1, chosen because edge compute with a directly bound database has no
-  cold start and no idle spin-down, not because it is a toy.
-- **Documentation written before the code** — every requirement carries an ID
-  (`FR-xxx` / `NFR-xxx`) that commits and tests can cite.
-
-## Stack
-
-| Layer | Choice |
-|---|---|
-| Compute | Cloudflare Workers |
-| Framework | Hono |
-| Database | Cloudflare D1 (SQLite at the edge) |
-| ORM | Drizzle |
-| Validation | Zod (also the source of the OpenAPI document) |
-| Auth | JWT access tokens + opaque rotating refresh tokens, WebCrypto only |
-| Tests | Vitest running inside the Workers runtime |
-| Web client | Vanilla JS + JSDoc types, served as static assets by the same Worker — no build step |
-
 ## Quick start
 
 ```bash
-git clone <your-repo-url>
-cd tallyup
 npm install
-
-# Authenticate Wrangler with your Cloudflare account (opens a browser)
-npx wrangler login
-
-# Create the database, then paste the returned id into wrangler.toml
-npx wrangler d1 create tallyup-db
-
-# Apply the schema to the local database
 npm run db:migrate:local
-
-# Create a local signing secret
-cp .dev.vars.example .dev.vars
-openssl rand -base64 32   # paste into JWT_SECRET in .dev.vars
-
-npm run dev               # http://localhost:8787
-npm test                  # API suite (real Workers runtime) + client suite
-npm run test:coverage     # same, with the NFR-501 coverage floor enforced
+npm run dev:api          # builds the PWA, serves app + API at http://localhost:8787
 ```
 
-Full setup, production deployment, backups and rollback:
-[`docs/06-DEPLOYMENT.md`](docs/06-DEPLOYMENT.md).
+For UI work with hot reload, also run `npm run dev` (Vite on :5173,
+proxying `/v1` to :8787).
 
-Three things are served once it is running:
+```bash
+npm run typecheck        # Worker (tsc) + PWA (svelte-check)
+npm test                 # API in the Workers runtime + browser logic under Node
+npm run test:coverage    # with the 80% floor enforced
+npm run deploy           # build + wrangler deploy --env production
+```
+
+Production setup, CI and rollback are in
+[`docs/06-DEPLOYMENT.md`](docs/06-DEPLOYMENT.md).
 
 | URL | What it is |
 |---|---|
-| <http://localhost:8787/> | **The web client** — a working app: sign in, create groups, add expenses, settle up |
-| <http://localhost:8787/docs> | Interactive API reference (Scalar), generated from the Zod schemas |
-| <http://localhost:8787/v1/openapi.json> | The raw OpenAPI document |
+| `/` | The PWA |
+| `/docs` | Interactive API reference |
+| `/v1/openapi.json` | OpenAPI document, generated from the Zod schemas |
 
-## The web client
+## How it works
 
-`web/` is a reference consumer of this API — the "any frontend can be built
-against it" claim, demonstrated rather than asserted. It covers every
-endpoint: registration and sign-in with silent token refresh, groups, invite
-codes and rotation, expenses in all four split types with a live-validating
-split editor, per-currency balances, suggested settlements, and the
-propose/confirm/decline cycle.
+```
+phone ─ photo ─► Tesseract (on device) ─► items ─► you tap who had what
+      ─ debt-simplify ─► shares, fewest transfers
+      ─ AES-256-GCM ─► POST /v1/shares ─► D1 stores ciphertext only
 
-### Watching the API work
-
-The client's real purpose is to make the API legible, so **every request it
-sends is logged in the app itself** — method, path, status, duration, and
-both payloads — behind the floating **API** button. Tokens and passwords are
-redacted before anything reaches the log, so it is safe to leave open while
-demonstrating to a room. It beats asking someone to open devtools, and it
-means the answer to "what did that button actually send?" is one click away.
-
-It is **served by the same Worker** as the API, as static assets. Three
-things follow from that, all of them deliberate:
-
-- **Same origin**, so the browser never makes a cross-origin request and no
-  CORS configuration is involved. `CORS_ORIGINS` exists for third-party
-  clients, not for this one.
-- **Static asset requests are free** and do not count against the Worker's
-  request budget.
-- **One deploy.** `wrangler deploy` ships the API and the client together.
-
-There is **no build step**. The browser runs exactly the JavaScript that is
-in the repo — no bundler, no transpile, nothing in CI that can break between
-source and what ships. Types are not sacrificed for that: the client is
-plain JavaScript annotated with JSDoc and type-checked by
-`tsc --checkJs` (`npm run typecheck` covers it).
-
-Routing uses `#/...` fragments rather than real paths. A History-API router
-would need a server-side catch-all rewrite, and that rewrite would also
-swallow a mistyped `/v1/...` into the app instead of returning a clean 404
-to an API client.
-
-**One honest limitation:** the API is a pure bearer-token API with no cookie
-session, so the client keeps its tokens in `sessionStorage` where page
-JavaScript can read them. That is fine for a reference client and would not
-be fine for a deployment holding real financial relationships — fixing it
-means adding a cookie-based session endpoint to the API, which is a
-deliberate scope change, not an oversight.
-
-## A full flow, end to end
-
-Every amount is an integer in **minor currency units** — `1050` means $10.50.
-The API never accepts or returns decimal money.
-
-```bash
-BASE=http://localhost:8787/v1
-
-# 1. Register two people
-curl -sX POST $BASE/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"alice@example.com","password":"a-long-enough-passphrase-42","displayName":"Alice"}'
-
-curl -sX POST $BASE/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"bob@example.com","password":"a-long-enough-passphrase-42","displayName":"Bob"}'
-
-# 2. Log in as Alice and keep the access token
-ALICE=$(curl -sX POST $BASE/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"alice@example.com","password":"a-long-enough-passphrase-42"}')
-ALICE_TOKEN=$(echo "$ALICE" | jq -r .accessToken)
-ALICE_ID=$(echo "$ALICE" | jq -r .user.id)
-
-BOB=$(curl -sX POST $BASE/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"bob@example.com","password":"a-long-enough-passphrase-42"}')
-BOB_TOKEN=$(echo "$BOB" | jq -r .accessToken)
-BOB_ID=$(echo "$BOB" | jq -r .user.id)
-
-# 3. Alice creates a group and shares the invite code
-GROUP=$(curl -sX POST $BASE/groups \
-  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"Bali Trip"}')
-GROUP_ID=$(echo "$GROUP" | jq -r .id)
-INVITE=$(echo "$GROUP" | jq -r .inviteCode)
-
-# 4. Bob joins with it
-curl -sX POST $BASE/groups/join \
-  -H "Authorization: Bearer $BOB_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"inviteCode\":\"$INVITE\"}"
-
-# 5. Alice pays for the hotel, split equally
-curl -sX POST $BASE/groups/$GROUP_ID/expenses \
-  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"amount\":12000,\"currency\":\"USD\",\"description\":\"Hotel\",
-       \"paidBy\":\"$ALICE_ID\",
-       \"split\":{\"type\":\"equal\",\"participants\":[\"$ALICE_ID\",\"$BOB_ID\"]}}"
-
-# 6. Who owes what
-curl -s $BASE/groups/$GROUP_ID/balances -H "Authorization: Bearer $ALICE_TOKEN"
-# → Alice +6000 USD, Bob -6000 USD
-
-# 7. The minimum set of payments that settles the group
-curl -s $BASE/groups/$GROUP_ID/settlements/suggested -H "Authorization: Bearer $ALICE_TOKEN"
-# → Bob pays Alice 6000 USD
-
-# 8. Bob says he paid; only Alice can confirm she received it
-SETTLEMENT=$(curl -sX POST $BASE/groups/$GROUP_ID/settlements \
-  -H "Authorization: Bearer $BOB_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"toUserId\":\"$ALICE_ID\",\"amount\":6000,\"currency\":\"USD\"}")
-
-curl -sX POST $BASE/settlements/$(echo "$SETTLEMENT" | jq -r .id)/confirm \
-  -H "Authorization: Bearer $ALICE_TOKEN"
-
-# 9. Everyone is square
-curl -s $BASE/groups/$GROUP_ID/balances -H "Authorization: Bearer $ALICE_TOKEN"
-# → {"balances":[]}
+link:  https://…/#/s/<id>/<key>     the key never reaches the server
 ```
 
-## Design notes worth knowing
-
-**Balances are always derived.** Nothing stores a running balance. Every
-balance read sums the expense splits and hands them to `calculateBalances`,
-so editing or deleting an expense changes the answer with no bookkeeping to
-fall out of sync (FR-308).
-
-**Confirming a settlement writes a balancing expense** rather than adjusting
-a stored number, which keeps the expense ledger the single source of truth for
-who owes what.
-
-**Expense deletion is soft.** Expenses are financial records, so a delete sets
-`deleted_at` and drops the row out of balance calculations; it is not removed.
-
-**Split amounts are resolved at write time.** A `percentage` split is turned
-into integer amounts when the expense is created, so a later change in the
-library's rounding could never retroactively alter a historical expense.
-
-**Currencies never net against each other.** A USD credit does not cancel an
-IDR debt; each currency gets its own balance sheet and its own settlement plan
-(FR-405).
-
-**Non-members get `404`, not `403`,** on group-scoped routes, so an outsider
-cannot tell a group they are excluded from apart from one that does not exist.
-
-## The `debt-simplify` dependency
-
-`packages/debt-simplify/` is a **local placeholder** standing in for the
-published package, which was not available when this repository was
-scaffolded. It has the same module name, import path, and call signatures
-(`resolveSplit`, `calculateBalances`, `simplifyDebts`, `simplifyDebtsMulti`),
-so swapping it out is a dependency change and nothing more:
-
-```bash
-npm pkg set dependencies.debt-simplify="^1.0.0"
-rm -rf packages/debt-simplify
-npm install
-npm test     # test/debt-simplify.test.ts proves the swap changed no behavior
-```
-
-If the published package's signatures differ, the only call sites to adjust
-are in [`src/ledger.ts`](src/ledger.ts) — nothing else in the API knows how
-the arithmetic works (FR-501).
+- **Split rules:** a shared item is divided equally among the people who
+  had it. Tax, service and discount follow what each person ordered. Every
+  bill sums to the exact rupiah.
+- **Payments:** a viewer's "I've paid" is an encrypted claim. The host
+  confirms it, which records the payment in the event, or declines it. A
+  viewer can never clear their own debt.
+- **Payment details:** each person can optionally show bank name, account
+  number and account holder. Anyone with the link sees them.
+- **History:** stored on the host's device. The host link (shown once,
+  after printing) is the backup.
+- **Expiry:** 30 days after the last edit.
 
 ## Layout
 
 ```
-web/              reference web client (static assets, no build step)
-  index.html      app shell
-  styles.css      design tokens, light and dark, responsive
-  js/api.js       API client: auth, token refresh, error envelope, call log
-  js/ui.js        DOM helper, exact money conversion, toasts, dialogs
-  js/inspector.js the API activity panel
-  js/view-*.js    one file per screen
-  js/expense-form.js  the split editor, all four split types
-src/
-  index.ts        app wiring: CORS, security headers, body limit, error envelope
-  middleware.ts   auth, rate limiting, group membership and role checks
-  validation.ts   every Zod schema; the single definition of what input is legal
-  ledger.ts       expense reads/writes and balance derivation
-  crypto.ts       password hashing, token generation, invite codes (WebCrypto only)
-  schema.ts       Drizzle table definitions and indexes
-  openapi.ts      OpenAPI document generated from the Zod schemas
-  errors.ts       the error envelope and its code set
-  routes/         auth, users, groups, expenses, settlements
-migrations/       generated SQL, applied by wrangler
-test/             integration tests against the real Workers runtime
-packages/         the debt-simplify placeholder (see above)
+src/                     Cloudflare Worker: Hono API over D1
+  routes/shares.ts       the seven /v1/shares endpoints
+  middleware.ts          rate limits, share loading, edit-token check
+  index.ts               app, CORS, error envelope, daily sweep
+web/                     the PWA (Svelte 5 + Vite)
+  src/lib/               crypto, document schema, split math, OCR, parser, API client
+  src/views/             Home, Editor (host), Viewer (guest)
+  src/components/        Receipt, BillCard, MoneyInput
+  public/                manifest, service worker, _headers (CSP), icons
+packages/debt-simplify/  split and settlement arithmetic, zero dependencies
+test/                    API tests (Workers runtime) and test/web (browser logic)
+scripts/copy-ocr.mjs     self-hosts Tesseract's worker, WASM and language data
 ```
 
-## License
+## Stack
 
-MIT
+Cloudflare Workers + D1 (free tier), Hono, Drizzle, Zod, Svelte 5, Vite,
+Tesseract.js, canvas-confetti and Vitest. The reasoning, and the free-tier
+numbers behind it, are in [`docs/02-ARCHITECTURE.md`](docs/02-ARCHITECTURE.md).

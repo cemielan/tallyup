@@ -4,122 +4,118 @@
 
 | Layer | Choice | Why |
 |---|---|---|
-| Compute | **Cloudflare Workers** | Free plan runs forever, no card required, and — unlike Render/Railway/Fly free tiers — **does not spin down when idle**. For a portfolio project a recruiter might click at any time, "always warm, zero cold start" matters more than raw throughput. |
-| Web framework | **Hono** | Tiny, fast, first-class Workers support, Express-like routing so it's easy to pick up, built-in middleware for CORS/JWT. |
-| Language | **TypeScript** | Matches the `debt-simplify` library; type-safety end to end. |
-| Database | **Cloudflare D1** (SQLite at the edge) | Binds directly to the Worker with no network hop (unlike calling an external Postgres over the internet from an edge function), which is both faster and keeps the whole stack inside one free account. Trade-off: SQLite, not Postgres — see §4. |
-| ORM | **Drizzle ORM** | First-class D1 support, generates real SQL you can read, lightweight, good TypeScript inference. (Prisma's D1 support is newer/less mature — Drizzle is the safer choice for this stack today.) |
-| Validation | **Zod** | Request/response schemas double as the source for the OpenAPI spec (NFR-301) — one definition, not two to keep in sync. |
-| Auth | Custom JWT (access + refresh) using the Workers-native `crypto.subtle` (WebCrypto) API | No native Node dependencies (which don't run in the Workers isolate). See Security doc for exact algorithm choices. |
-| Testing | **Vitest** + `@cloudflare/vitest-pool-workers` | Runs tests inside the actual Workers runtime (via Miniflare), not a Node approximation — catches Workers-specific bugs (e.g. missing Node APIs) that a plain Node test runner would miss. |
-| CI/CD | **GitHub Actions** + `wrangler deploy` | Free for public repos; deploy step uses Cloudflare's official `wrangler-action`. |
-| API docs | **Scalar** (or Swagger UI) serving the generated OpenAPI JSON | Free, static, no separate hosting needed — served by the same Worker. |
-| Rate limiting | **D1**-backed fixed-window counter (one upsert per request) | Originally specified as KV. Changed during implementation because the free KV write budget is 1,000/day (§3), which a per-request counter exhausts within an hour of modest traffic, while D1's free write allowance is two orders of magnitude larger and needs no extra binding. This is the mitigation this document already named under "Upgrade triggers", adopted up front rather than after an outage. |
-| Secrets | `wrangler secret put` (production) + `.dev.vars` (local, gitignored) | Never in source control, never in `wrangler.toml`. |
-| Reference web client | Vanilla JavaScript with JSDoc types, served as **Workers Static Assets** from the same Worker | Proves the API is usable by something that is not the test suite (Roadmap Phase 3). Same origin as the API, so no CORS configuration is involved and no token ever crosses an origin boundary. No build step, so CI gains nothing to break and the browser runs exactly what is in the repo; `tsc --checkJs` still type-checks it. Static asset requests are free and do not draw on the Worker request budget. |
-| Domain | `*.workers.dev` free subdomain by default; a custom domain is free to attach if you already own one (Cloudflare doesn't charge for the attachment, only domain registration itself costs money elsewhere). | |
+| Compute | **Cloudflare Workers** | Free plan with no card required, and it **does not spin down when idle**, so there is no cold start for whoever opens a link. |
+| HTTP framework | **Hono** | Small, first-class Workers support, built-in CORS, body-limit and secure-header middleware. |
+| Database | **Cloudflare D1** (SQLite) | Bound directly to the Worker. Stores ciphertext, edit-token hashes, claims and rate-limit counters. Nothing relational about the data needs Postgres. |
+| ORM | **Drizzle** | Readable SQL, good D1 support. Generates `migrations/` from `src/schema.ts`. |
+| Validation | **Zod** | Validates API bodies on the server and the decrypted event in the browser. Also the source of the OpenAPI document. |
+| Encryption | **WebCrypto AES-256-GCM**, in the browser | Native, audited, no dependency. See Security §2. |
+| Frontend | **Svelte 5 + Vite**, built to `dist/` and served as **Workers Static Assets** | Svelte's compiler output is small, and its built-in transitions cover most of the motion. Same origin as the API, one deploy, and static requests cost nothing. |
+| PWA | Hand-written `manifest.webmanifest` + `sw.js` (about 50 lines) | A plugin plus Workbox would replace 50 readable lines with a dependency tree. The trade-off is recorded in `sw.js`. |
+| OCR | **Tesseract.js** (Apache-2.0), self-hosted under `/ocr` | Runs in a Web Worker on the device. Its worker, LSTM WASM builds and `eng` + `ind` language data are copied from `node_modules` by `scripts/copy-ocr.mjs`. |
+| Celebration | **canvas-confetti** (ISC) | One function call. Run without its worker so the CSP stays strict. |
+| Split math | **`debt-simplify`** workspace package | Zero dependencies. Runs in the browser. |
+| Testing | **Vitest**, twice | API tests run inside the real Workers runtime (`@cloudflare/vitest-pool-workers`). The browser logic (split math, parser, crypto, routing) runs under Node. |
+| CI/CD | **GitHub Actions** + `wrangler-action` | Typecheck, build, test with coverage, then migrate and deploy. |
 
-## 2. High-level flow
+## 2. How a split flows
 
 ```
-Client (web/mobile/CLI/Slack bot — any of these, none of them included in this repo)
-        │  HTTPS, JSON, Bearer JWT
-        ▼
-Cloudflare Worker (Hono router)
-   ├─ auth middleware (verifies JWT, loads user)
-   ├─ rate-limit middleware (KV sliding window)
-   ├─ route handler (validates body with Zod)
-   ├─ authorization check (is caller a member of this group?)
-   ├─ service layer (business logic, calls into debt-simplify)
-   └─ Drizzle ORM
-        ▼
-Cloudflare D1 (SQLite, bound directly — no network hop)
+ Host's phone (PWA)                                       Cloudflare
+ ──────────────────                                       ──────────
+ photo ─► Tesseract (Web Worker, on device) ─► text
+ text ─► receipt-parser ─► items, tax, service
+ host edits bills, taps who had what
+ debt-simplify ─► per-person shares, fewest transfers
+ event JSON ─► AES-256-GCM (fresh key) ─► {ciphertext, iv}
+                                   POST /v1/shares ──────► Worker ─► D1: ciphertext,
+                                   ◄── {id, editToken}              sha256(editToken)
+ local history: {id, key, editToken}
+
+ view link:  https://<host>/#/s/<id>/<key>              ◄─ shared in chat
+ host link:  https://<host>/#/e/<id>/<key>/<editToken>  ◄─ kept private
+
+ Friend's phone
+ ──────────────
+ GET /v1/shares/<id> ─► ciphertext ─► decrypt with <key> from the fragment
+ Zod-validate ─► debt-simplify ─► "You pay Ana Rp 63.525" + Ana's bank details
+ "I've paid" ─► encrypt claim ─► POST /v1/shares/<id>/claims
+
+ Host's phone
+ ────────────
+ GET claims ─► decrypt ─► Confirm ─► add settlement to event ─► PUT (edit token)
+                                   ─► DELETE claim
 ```
 
-The `debt-simplify` package is imported as a normal npm dependency inside
-the service layer. It never touches HTTP, auth, or the database — it's
-pure functions in, data out (per its own design notes).
+The fragment (`#...`) is the whole trick. Browsers never put it in a
+request line or a Referer header, so the key reaches only the person who
+holds the link.
+
+### Routing
+
+All routes are hash routes (`#/`, `#/new`, `#/s/…`, `#/e/…`, `#/h/…`;
+see `web/src/lib/links.ts`). The server is never asked for an app route,
+so `wrangler.toml` leaves single-page-app fallback off and a mistyped
+`/v1/...` still returns a clean 404. When a host link is opened, its edit
+token is saved to local history and the URL is replaced with `#/h/<id>`,
+taking the token out of the address bar.
 
 ## 3. Free-tier budget
 
-These numbers come from Cloudflare's official Workers limits documentation
-(free plan, verified against `developers.cloudflare.com/workers/platform/limits`
-during research for this doc). **Re-verify before hard-coding any of these
-as a production assumption — free-tier terms are Cloudflare's to change.**
+These numbers come from Cloudflare's Workers limits documentation (free
+plan) at research time. **Re-verify them before relying on any of them.**
 
-| Resource | Free limit | What that means for Tallyup |
+| Resource | Free limit | What it means for Tallyup |
 |---|---|---|
-| Requests | 100,000/day (~3M/month), reset 00:00 UTC | Roughly 1 request/second sustained, all day, every day. For a portfolio demo hit by recruiters and your own testing, this is enormous headroom. |
-| CPU time per request | **10ms**, and not raisable on this plan | This is the tightest real constraint in the whole stack. Most Workers use ~1-2ms; heavier auth/parsing work typically lands 10-20ms — meaning a naive implementation can blow the free budget. Concretely: **password hashing and the `simplifyDebts` loop are the two places to watch.** Use a WebCrypto-native, moderate-cost hashing approach (see Security doc) and keep the settlement algorithm's group-size assumption realistic (§ NFR-202 caps it at 50 members — an O(n log n) sort well within budget at that size). Load-test this specific path before shipping. |
-| Memory | 128MB per isolate | Not a practical constraint for this workload. |
-| Subrequests | 50 per request | Watch this if a single request needs several D1 queries — batch queries where possible instead of looping individual `SELECT`s. |
-| Burst rate | 1,000 requests/minute | Relevant to the rate-limiter design — the platform itself will hard-stop above this regardless of your own limits. |
-| KV reads | 100,000/day | Not used — rate-limit counters live in D1 instead (see §1). |
-| KV writes | **1,000/day** | This is the number that ruled KV out for rate limiting: a naive "write a KV entry per request" limiter blows it at only ~40 requests/hour sustained. Rather than approximate around it, the counters went to D1, whose free write allowance is far larger. No KV namespace is bound at all, which also removes a setup step. |
-| D1 storage | ~5GB | Effectively unlimited for this app's data shape (users/groups/expenses are tiny rows). |
-| Worker script size | 3MB compressed | Watch dependency bloat; this is generous for a Hono + Drizzle + Zod stack but don't casually add heavy libraries. The web client does not count against this — static assets are stored and served separately from the Worker script. |
-| Static asset requests | Unlimited, free | Requests the asset handler serves (the web client's HTML, CSS and JS) neither cost money nor consume the 100,000/day Worker request allowance. Only the `/v1/...` API calls the client makes are billed against it. |
+| Requests | 100,000/day | API calls only. Opening an event is two calls (share + claims) and a save is one. Static assets do not count. |
+| CPU per request | **10 ms**, not raisable on Free | No longer a pressure point. The server does no hashing beyond one SHA-256 and no math. All arithmetic runs in the browser. |
+| Subrequests | 50 per request | Every handler uses at most three D1 statements. |
+| KV writes | 1,000/day | The reason rate-limit counters live in D1 rather than KV. No KV namespace is bound. |
+| D1 storage | ~5 GB | A share is capped at 48,000 characters of ciphertext. Even at that cap, 5 GB holds roughly 100,000 live events, and the 30-day expiry keeps the set bounded. |
+| Worker script size | 3 MB compressed | Hono + Drizzle + Zod. The PWA and OCR files are static assets and do not count. |
+| Static asset file size | 25 MiB per file | The largest OCR file is about 3.8 MB. |
+| Static asset requests | Free, unlimited | The PWA shell, the bundles and the 8 MB of OCR data cost nothing to serve. |
+| Cron triggers | Available on Free | One daily sweep. |
 
 ### Upgrade triggers
 
-Document any future decision to exceed free tier here, with the trigger
-and the cheapest fix, so it's a deliberate choice rather than a surprise
-bill:
-
 | If this happens | Cheapest mitigation |
 |---|---|
-| Sustained traffic near 100k requests/day | Workers Paid is $5/month flat, includes 10M requests — a 100x headroom jump for $5. Not urgent; only relevant if this stops being a portfolio project and gets real usage. |
-| D1 write budget becomes a bottleneck for rate-limit counters | Move to Durable Objects, which gives a per-key counter with no database round trip (requires Workers Paid, $5/month). The counters already batch into one upsert per request, so there is no cheaper software fix left. |
-| A group exceeds 50 members and `simplifyDebts` risks the 10ms CPU budget | Cap group size at the API layer (return a clear validation error) rather than let a request silently fail with Error 1102. Implemented, and covered by `test/scale.test.ts`. |
-| Password hashing needs to be stronger than 4,000 PBKDF2 iterations | Workers Paid, $5/month. It makes `limits.cpu_ms` configurable, which is the only thing standing between this project and an OWASP-grade iteration count. See Security §2 for the measured cost curve. |
-| A single group's ledger grows past roughly 10,000 split rows | Netting is O(rows) and measured at ~4ms for 10,000 rows, so the ceiling is real but distant. The fix is a stored running balance invalidated on expense write, not a faster loop — see the `ponytail:` note on `netBalances` in `src/ledger.ts`. |
+| Sustained traffic near 100k API requests/day | Workers Paid ($5/month, 10M requests). |
+| D1 writes from rate-limit counters become the bottleneck | Durable Objects counters (requires Workers Paid). |
+| An event needs more than Rp 50.000.000 in one bill | Move the library's proportional `distribute` to BigInt. The cap exists because floating-point products must stay under 2^53 to stay exact (`ponytail:` note in `web/src/lib/doc.ts`). |
+| The service worker cache grows noticeably | Generate a precache list at build time and delete old entries. See the `ponytail:` note in `web/public/sw.js`. |
 
 ## 4. Trade-offs and known limitations
 
-- **D1 binds at most 100 parameters per statement**, and each statement in a
-  `batch` counts separately. A row of `expense_splits` binds four, so a
-  single insert holds 25 rows while a group may have 50 members — every one
-  of whom can share an expense. `src/ledger.ts` chunks the write for exactly
-  this reason; without it, an expense shared by a large group failed
-  outright. This was found by `test/scale.test.ts`, not in production, which
-  is what that test is for.
-- **SQLite (D1), not Postgres.** No advanced Postgres features (window
-  functions are limited, no native `JSONB`, no `LISTEN/NOTIFY`). For this
-  app's schema (users, groups, expenses, splits) this is not a real
-  limitation — but if the roadmap later needs something Postgres-specific,
-  that's a deliberate stack change to re-document here, not a silent
-  workaround.
-- **The web client holds its tokens in `sessionStorage`.** The API is a
-  pure bearer-token API with no cookie session, so a browser client has to
-  keep the access and refresh tokens somewhere JavaScript can read, which
-  means any successful XSS on the client can steal a session. This is
-  acceptable for a reference consumer and would not be for a deployment
-  holding real financial relationships; fixing it properly means adding a
-  cookie-based session endpoint to the API, which is a deliberate scope
-  change and not a silent one.
-- **No long-lived connections.** Workers are request/response only — no
-  WebSocket-based live balance updates without adding Durable Objects
-  (paid tier). Out of scope; poll instead.
-- **The runtime compatibility date is pinned to the test runner, not to
-  today.** `wrangler.toml` sets `compatibility_date` to the newest date the
-  `workerd` bundled with `@cloudflare/vitest-pool-workers` accepts, so the
-  suite and production agree on runtime behavior. Deploying with a newer date
-  than the test runner supports would mean testing against different
-  semantics than you ship; raise it only when the Vitest pool catches up.
-- **10ms CPU budget is real and easy to blow without noticing locally**
-  (your laptop doesn't enforce it — Miniflare/Vitest approximates it but
-  production is the real test). Treat any endpoint doing hashing, JSON
-  parsing of large payloads, or non-trivial computation as something to
-  specifically CPU-profile before considering a phase done.
+- **History is device-local.** Clearing site data, or Safari evicting
+  storage for a site not added to the Home Screen, loses the host's event
+  list and edit tokens. The host link is the backup, and the app asks for
+  persistent storage when an event is first published.
+- **The server cannot enforce content rules.** It can only cap size and
+  rate. A client could upload a nonsensical event, and it would only hurt
+  the people holding that event's key. The browser validates every
+  document it decrypts.
+- **The view link is a bearer secret.** Forwarding it forwards access,
+  including the bank details. "Reset share link" is the recovery path.
+- **Claims are honour-system.** Anyone with the view link can claim to be
+  anyone. Only the host's confirmation changes balances.
+- **OCR accuracy is limited.** Thermal paper, creases and unusual layouts
+  defeat it. The parser is heuristic and tuned for Indonesian receipts. The
+  editor, not the scanner, is the source of truth.
+- **No live updates.** Workers are request/response. Viewers reload, and
+  the host taps "Check for payments".
+- **The compatibility date is pinned to the test runner**
+  (`wrangler.toml`), so tests and production share runtime semantics.
 
-## 5. Alternative stack (documented, not chosen)
+## 5. Alternatives considered
 
-If a future need genuinely requires Postgres (e.g. complex reporting
-queries), the fallback free stack is: **Neon** (permanent free Postgres
-tier, ~0.5GB/project) or **Supabase** (permanent free tier, 500MB,
-bundled auth) + a traditional Node/Fastify API on **Render's free web
-service tier**. The explicit cost of that swap: Render's free tier
-spins down after inactivity, reintroducing cold starts — which is exactly
-what the chosen stack avoids. Don't make this switch without updating
-NFR-403 and re-testing the cold-start assumption recruiters will
-experience.
+- **Plaintext storage with server-side balances.** This was the previous
+  design: accounts, groups and a REST ledger. It was replaced because
+  "no sign-up" and "nothing readable stored" cannot both hold if the
+  server computes balances.
+- **Data in the URL only, no server.** True zero storage, but the links
+  are long and frozen, with no payment tracking. It is rejected because
+  payment tracking needs shared state.
+- **Cloud OCR or vision models.** More accurate, but the receipt image
+  would leave the device (FR-201).

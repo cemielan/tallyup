@@ -1,157 +1,122 @@
 # Security
 
-Requirements here marked **MUST** block phase completion (NFR-101).
-This is a financial-adjacent app (it tracks who owes whom) even though
-it never touches real payment rails — treat user data and integrity of
-balances with the seriousness that implies.
+Every `MUST` here is a requirement (NFR-102). Section numbers are cited
+from the code, so keep them stable.
 
-## 1. Threat model (what this app is actually exposed to)
+## 1. Threat model
 
-| Threat | Why it matters here | Primary control |
+| Asset | Who should see it | Protected by |
 |---|---|---|
-| Credential stuffing / brute force login | Standard for any password auth | Rate limiting on `/auth/login` (§4), generic error message (§2) |
-| Broken authorization (IDOR) | The app's core data — groups, expenses, balances — is exactly what a missing membership check would leak or corrupt | Membership check before every group-scoped read/write (NFR-102) |
-| JWT theft/replay | Access tokens are bearer credentials | Short expiry (15 min), refresh rotation, HTTPS-only |
-| Refresh token theft | Longer-lived than access tokens, higher value if stolen | Stored hashed, rotated on every use, revocable |
-| Invite code brute-forcing | An invite code is effectively a password for joining a group | High-entropy codes, rate-limited join attempts |
-| Injection (SQL) | Any app touching a database | Parameterized queries only, via Drizzle — no raw string-concatenated SQL, ever |
-| Mass assignment / over-posting | Expense/group updates take user input | Zod schemas define exactly which fields are accepted; unknown fields rejected, not silently ignored |
-| Resource exhaustion on a metered free tier | Unlike a paid server, hitting a free-tier limit here means **downtime**, not a bill — a denial-of-wallet attack becomes a denial-of-service attack | Rate limiting (§4), request size limits, sane pagination caps (NFR-203) |
-| Dependency vulnerabilities | Any npm-based project | Dependabot/`npm audit` in CI (NFR-503) |
-| Secret leakage | Any project with signing keys | Wrangler secrets only, `.dev.vars` gitignored, no secrets in logs |
+| Event contents (names, items, amounts, bank details) | Holders of the view link | End-to-end encryption (§2) |
+| Edit rights | The host, through the host link | Edit token, stored hashed (§2) |
+| Receipt photos | Only the device that took them | On-device OCR, no upload path (FR-201) |
+| Service availability on the free tier | Everyone | Rate limits and size caps (§3, §4) |
 
-## 2. Authentication
+**Out of scope for protection:** someone the link was forwarded to. The
+link *is* the access. Its mitigation is "Reset share link" (FR-107), not
+a control the server could enforce.
 
-> **Benchmark result (recorded as this section requires).** Measured inside
-> the Workers runtime by `test/cpu-budget.test.ts`: PBKDF2-SHA256 costs
-> ~3.5 ms at 4,000 iterations, ~8 ms at 10,000, and ~63 ms at 100,000. The
-> Free plan allows **10 ms of CPU per request and does not let that be
-> raised** (`limits.cpu_ms` is Paid-only, verified against Cloudflare's
-> limits page). The shipped count is therefore **4,000**, which is far below
-> OWASP's current guidance of 600,000 for PBKDF2-SHA256. This is a real
-> weakness, not a judgement that weak hashing is fine: it is the most this
-> plan tier can afford. Workers Paid ($5/month) lifts the CPU cap and makes
-> 600,000 affordable, and because each stored hash records its own iteration
-> count, raising it is backward compatible. An earlier revision of this
-> project shipped 100,000 — six times over budget, which would have failed
-> every login with Error 1102.
+**Who is assumed hostile:** the network, any third-party website, anyone
+who reads the server's database or logs, and any person who guesses or
+scrapes share ids.
 
-- **MUST** hash passwords before storage. Use a WebCrypto-native
-  algorithm since Workers can't run native (non-WASM) Node addons like
-  the common `argon2` package. Concretely: **PBKDF2-SHA256 via
-  `crypto.subtle.deriveBits`**, with a per-user random salt (16 bytes)
-  and an iteration count tuned to land safely under the platform's 10ms
-  CPU-per-request budget (§Architecture) — benchmark this specific
-  number at implementation time rather than guessing; don't ship a
-  count that risks Error 1102 on login. If a WASM-compiled Argon2id
-  build for Workers proves fast and reliable at implementation time, it
-  is an acceptable stronger alternative — document the choice and the
-  benchmark either way.
-- **MUST** return the identical error (`INVALID_CREDENTIALS`, generic
-  message) whether the email doesn't exist or the password is wrong —
-  no user enumeration via differing error messages or response timing.
-  Use a constant-time comparison for the password check itself.
-- **MUST** issue access tokens as JWTs signed with `HS256`, secret ≥256
-  bits, stored via `wrangler secret`, expiry **15 minutes**.
-- **MUST** issue refresh tokens as high-entropy random strings (not
-  JWTs — no need for them to be self-describing), expiry 30 days,
-  **stored server-side only as a hash** (SHA-256 is fine here — this is
-  an opaque token comparison, not a password needing slow hashing).
-- **MUST** rotate the refresh token on every use (`POST /auth/refresh`
-  issues a new refresh token and invalidates the old one). If an
-  already-used/revoked refresh token is presented again, treat it as a
-  signal of possible theft and revoke the entire token family for that
-  user, not just the one token.
-- **MUST NOT** log raw passwords, raw tokens, or raw password hashes at
-  any log level, including on error paths.
+## 2. Encryption and credentials
 
-## 3. Authorization
+- The browser MUST encrypt every event and claim with AES-256-GCM via
+  WebCrypto, under a fresh 256-bit key per event (`web/src/lib/crypto.ts`).
+- Every encryption MUST use a fresh random 96-bit IV. GCM is broken by IV
+  reuse, so the IV is never derived or counted.
+- Keys and edit tokens MUST travel only in the URL fragment. Browsers do not
+  send fragments in requests or in `Referer`, and `Referrer-Policy:
+  no-referrer` is set anyway (§6).
+- Opening a host link MUST move its edit token into local storage and
+  replace the URL with `#/h/<id>`. This keeps the token out of the
+  address bar and out of screenshots.
+- The edit token is 256 random bits. The server MUST store only its
+  SHA-256, and MUST return the token once, on creation. A fast hash is
+  correct here: the input is a random 256-bit value, not a guessable
+  password.
+- Share ids are 128 random bits. Even an id that leaked from a log would
+  reveal nothing without the key.
+- GCM authenticates. A ciphertext tampered in storage or transit fails to
+  decrypt, and the app reports a broken link rather than rendering altered
+  numbers.
 
-- **MUST** check group membership before any group-scoped read or write
-  — implement this as shared middleware applied to every group/expense
-  route, not as a copy-pasted check per handler (a missed copy-paste is
-  exactly how IDOR bugs happen).
-- **MUST** check role (`owner` vs `member`) for owner-only actions
-  (remove member, rotate invite code) server-side — never trust a role
-  claim from the client.
-- **MUST** verify expense participants are actual group members
-  (FR-303) at write time, not just at read time.
-- **MUST** return `404 NOT_FOUND` (not `403 FORBIDDEN`) when a caller
-  who isn't a group member requests that group's resources, so a
-  non-member can't distinguish "doesn't exist" from "exists but you're
-  not in it."
+**What a viewer can do.** A viewer holds the key, so a viewer could encrypt
+a forged event. They cannot store it, because `PUT` needs the edit token.
+They can forge a claim, but a claim changes nothing until the host
+confirms it.
 
-## 4. Rate limiting
+## 3. Rate limiting and abuse
 
-Given the free-tier KV write budget (1,000/day — see Architecture §3),
-the rate limiter **MUST NOT** write to KV on every single request.
-Design pattern: track a counter in KV per (IP or user, endpoint-class,
-time-window) and only write when the window rolls over or the count
-changes meaningfully — read-heavy, write-light. Exact algorithm is an
-implementation detail, but the write-budget constraint is not optional.
+- Every IP: 120 requests per minute on `/v1/shares/*`. Creates: 30 per hour.
+  Claims: 20 per hour. Fixed-window counters live in D1 (Architecture §1
+  explains why not KV), and a blocked request gets `429` + `Retry-After`.
+- Unanswered claims MUST be capped at 50 per share.
+- Shares MUST expire 30 days after the last update. Reads MUST honour
+  expiry before the sweep runs.
 
-Minimum required limits:
+## 4. Input validation
 
-| Endpoint class | Limit | Key |
-|---|---|---|
-| `/auth/login`, `/auth/register` | 5 requests / 5 minutes | per IP |
-| `/groups/join` | 10 requests / hour | per IP (invite code brute-force protection) |
-| All other authenticated endpoints | 100 requests / minute | per user |
+- Every body and path parameter MUST pass a Zod schema before a handler
+  runs. Unknown fields are rejected (`z.strictObject`), so a client cannot
+  smuggle plaintext into a column.
+- Bodies over 64 KiB MUST be refused before parsing. Ciphertext is capped
+  at 48,000 characters for a share and 2,000 for a claim.
+- The server can check only shape. **The browser MUST validate every
+  decrypted document** with the schema in `web/src/lib/doc.ts` (limits,
+  digits-only account numbers, references to real people) and treat
+  failure as a broken link.
+- The UI renders all user text through Svelte's escaping. No `{@html}`
+  is used anywhere.
 
-Exceeding a limit **MUST** return `429 RATE_LIMITED` with a `Retry-After`
-header, using the `RATE_LIMITED` error code from the API spec.
+## 5. CORS
 
-## 5. Input validation
+`/v1/*` allows any origin. This is safe because no credential is ambient:
+there are no cookies, and the edit token must be attached explicitly by
+code that already holds it. A hostile page can do nothing through a
+visitor's browser that it could not do with curl.
 
-- **MUST** validate every request body, query param, and path param with
-  a Zod schema before it reaches business logic — reject unknown fields
-  (`.strict()`), don't silently drop them.
-- **MUST** validate monetary amounts are positive integers within a
-  sane upper bound (e.g. reject an expense claiming a $10 billion
-  hotel bill — pick a real ceiling and document it in the schema).
-- **MUST** validate `exact` and `percentage` splits sum correctly at the
-  API layer *before* calling into `debt-simplify`, so validation errors
-  come back as a clean `422` with a useful message rather than the
-  library throwing.
+## 6. Browser hardening
 
-## 6. Transport & headers
+Static assets carry the headers in `web/public/_headers`:
 
-- **MUST** be served over HTTPS only (Cloudflare provides this by
-  default for Workers — don't disable it).
-- **MUST** set a strict CORS policy: an explicit allow-list of origins
-  (configured per environment), never `Access-Control-Allow-Origin: *`
-  for authenticated routes.
-- **SHOULD** set standard security headers (`X-Content-Type-Options:
-  nosniff`, `Referrer-Policy: no-referrer`) — low effort, standard
-  hygiene, even though this is a pure JSON API with no HTML surface to
-  protect from XSS directly.
+- `Content-Security-Policy`:
+  - `script-src 'self' 'wasm-unsafe-eval'`. WebAssembly compilation is
+    allowed for OCR; `eval` of JavaScript is not.
+  - `worker-src 'self'`. Tesseract is told not to use blob: workers, and
+    canvas-confetti runs without its worker.
+  - `connect-src 'self'` plus Google Fonts.
+  - `object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`.
+- `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and
+  a `Permissions-Policy` that allows only the camera, for receipt photos.
 
-## 7. Secrets & configuration
+API responses get Hono's `secureHeaders`.
 
-- **MUST** keep all secrets (JWT signing key, any future third-party API
-  keys) out of `wrangler.toml` and out of git entirely. Local dev uses
-  `.dev.vars` (gitignored); production uses `wrangler secret put`.
-  Commit a `.dev.vars.example` with placeholder values so setup is
-  discoverable (serves NFR-303, the 10-minute-clone-to-running goal).
-- **MUST** use a different JWT signing secret per environment
-  (local/staging/production) so a leaked local secret can't be used
-  against production.
+Check after every deploy:
 
-## 8. Auditability
+```bash
+curl -sI https://<host>/ | grep -i content-security
+```
 
-- **SHOULD** log (server-side only, never returned to the client)
-  security-relevant events: failed logins, refresh token reuse
-  detection, role-gated actions (member removal, invite rotation).
-  This is a `SHOULD` for the MVP and becomes a `MUST` if the project
-  ever handles more than portfolio-level trust.
+## 7. Secrets and dependencies
 
-## 9. Explicitly out of scope (and why that's fine)
+- The Worker has no secrets: no signing key, no API keys. `.dev.vars` is
+  unused, and still gitignored in case one is added later.
+- Dependabot runs weekly (NFR-503). CI runs `npm audit --omit=dev` and
+  reports without failing.
+- Third-party code at runtime: Svelte (MIT), Zod (MIT), Tesseract.js
+  (Apache-2.0) with its language data (MIT), and canvas-confetti (ISC).
+  Hono and Drizzle (MIT) run on the server. Google Fonts are the only
+  third-party network fetch, and they reveal nothing about events.
 
-- **No PCI scope.** Tallyup never stores or processes card numbers, bank
-  details, or moves real money — settlements are a confirmation record,
-  not a payment (see Project Brief non-goals). This is a deliberate
-  scope boundary, not an oversight.
-- **No GDPR-grade data portability/erasure tooling in the MVP.** For a
-  portfolio project with no real user base this is a reasonable initial
-  gap — but if you ever host this beyond your own testing, revisit this
-  section before doing so.
+## 8. Known limitations
+
+- **Device-local history.** Losing browser storage loses edit access unless
+  the host link was saved.
+- **Bank details are visible to every link holder.** The UI says so next to
+  the fields.
+- **Claims are unauthenticated** by design. Spam is bounded by the per-share
+  cap and the per-IP limit, and only the host's confirmation counts.
+- **No forward secrecy for an event.** Anyone who once had the key can read
+  every later version until the host resets the link.
