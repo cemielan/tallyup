@@ -42,7 +42,7 @@
     "@tesseract.js-data/eng": "^1.0.0",
     "@tesseract.js-data/ind": "^1.0.0",
     "@types/canvas-confetti": "^1.9.0",
-    "@vitest/coverage-istanbul": "^4.1.11",
+    "@vitest/coverage-istanbul": "^5.0.3",
     "drizzle-kit": "^0.31.10",
     "svelte-check": "^4.7.6",
     "typescript": "^5.9.3",
