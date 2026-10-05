@@ -51,7 +51,9 @@ confirmed or declined.
 ## 2. The event document (encrypted)
 
 Defined and validated by `web/src/lib/doc.ts`. Money is **whole rupiah**
-(integers). There are no floats anywhere in the document.
+(integers). There are no floats anywhere in the document. The JSON is gzipped
+before encryption, which shrinks a typical event several times over
+(API spec §1).
 
 ```ts
 {

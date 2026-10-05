@@ -62,29 +62,58 @@ taking the token out of the address bar.
 
 ## 3. Free-tier budget
 
-These numbers come from Cloudflare's Workers limits documentation (free
-plan) at research time. **Re-verify them before relying on any of them.**
+Verified against Cloudflare's Workers, D1 and static-asset limits pages on
+2026-10-05. **Re-verify before relying on a number. Cloudflare changes
+them.**
 
-| Resource | Free limit | What it means for Tallyup |
+| Resource | Free limit | Where Tallyup spends it |
 |---|---|---|
-| Requests | 100,000/day | API calls only. Opening an event is two calls (share + claims) and a save is one. Static assets do not count. |
-| CPU per request | **10 ms**, not raisable on Free | No longer a pressure point. The server does no hashing beyond one SHA-256 and no math. All arithmetic runs in the browser. |
-| Subrequests | 50 per request | Every handler uses at most three D1 statements. |
-| KV writes | 1,000/day | The reason rate-limit counters live in D1 rather than KV. No KV namespace is bound. |
-| D1 storage | ~5 GB | A share is capped at 48,000 characters of ciphertext. Even at that cap, 5 GB holds roughly 100,000 live events, and the 30-day expiry keeps the set bounded. |
-| Worker script size | 3 MB compressed | Hono + Drizzle + Zod. The PWA and OCR files are static assets and do not count. |
-| Static asset file size | 25 MiB per file | The largest OCR file is about 3.8 MB. |
-| Static asset requests | Free, unlimited | The PWA shell, the bundles and the 8 MB of OCR data cost nothing to serve. |
-| Cron triggers | Available on Free | One daily sweep. |
+| Worker requests | **100,000/day**, reset 00:00 UTC (07:00 WIB) | API calls only. Opening an event is **one** request: the share and its claims come back together. |
+| Static asset requests | Free and unlimited; they never invoke the Worker | The PWA, its bundles and the 8 MB of OCR data. |
+| D1 rows written | **100,000/day**, account-wide. Each index touched counts as an extra row. | Creates, saves, claims, confirmations, the sweep, and one rate-limit counter per write request. **This is the first limit Tallyup hits.** |
+| D1 rows read | 5,000,000/day | One share row plus at most 50 claims per open. Not a practical constraint. |
+| D1 database size | **500 MB** per database (5 GB per account) | A typical 3-person event is about 600 characters of ciphertext. Creation stops at 450 MB (`DB_SOFT_LIMIT_MB`), which is roughly 400,000 live events. |
+| CPU per request | 10 ms, not raisable on Free | One SHA-256 at most. All arithmetic runs in the browser. |
+| Queries per request | 50 | Every handler uses three or fewer. |
+| Cron triggers | 5 per account, 10 ms CPU | One daily sweep. The deletes run in D1, not on the Worker's CPU. |
+| Static asset files | 20,000 per version, 25 MiB each | About 30 files. The largest is 3.8 MB. |
+
+### What one event costs
+
+A typical event: created once, saved twice, four friends opening it twice
+each, three "I've paid" claims, three confirmations, and the host checking
+back three times.
+
+| | Per event | Free daily budget | Events per day |
+|---|---|---|---|
+| Worker requests | ~23 | 100,000 | ~4,000 |
+| D1 rows written | ~45 | 100,000 | **~2,000** |
+
+**Roughly 2,000 events a day (about 60,000 a month) fit the free tier.** At
+an average of five people per event, that is on the order of 10,000 people
+splitting a bill every day.
+
+### What happens at the limit
+
+Nothing is ever billed: the Free plan has no overage charges. Instead,
+things stop until the daily reset:
+
+| Limit reached | What users see |
+|---|---|
+| Worker requests | The app still opens, because static assets do not touch the Worker. API calls fail, and the app shows "Tallyup is very busy… your changes are safe on this phone". Drafts are kept locally. |
+| D1 rows written | D1 refuses all queries, reads included, until 00:00 UTC. The app shows the same "busy" message. |
+| Database size (soft cap) | New events are refused with `503 AT_CAPACITY`. Existing events keep working, and the daily sweep frees space as old events expire. |
 
 ### Upgrade triggers
 
 | If this happens | Cheapest mitigation |
 |---|---|
-| Sustained traffic near 100k API requests/day | Workers Paid ($5/month, 10M requests). |
-| D1 writes from rate-limit counters become the bottleneck | Durable Objects counters (requires Workers Paid). |
-| An event needs more than Rp 50.000.000 in one bill | Move the library's proportional `distribute` to BigInt. The cap exists because floating-point products must stay under 2^53 to stay exact (`ponytail:` note in `web/src/lib/doc.ts`). |
-| The service worker cache grows noticeably | Generate a precache list at build time and delete old entries. See the `ponytail:` note in `web/public/sw.js`. |
+| Daily D1 writes regularly pass ~60,000, or requests pass ~60,000 | **Workers Paid, $5/month.** It raises every daily limit above into monthly allowances many times larger and makes the database cap 10 GB. Check current pricing first. After upgrading, raise `DB_SOFT_LIMIT_MB`. |
+| One campus or office network hits the per-address limits | Key creates on a Turnstile-verified client instead of the IP (Security §3). |
+| Bots fill the database | Cloudflare Turnstile on create (free). It breaks anonymous third-party creates, so pair it with API keys for registered clients. |
+| Rate-limit counters become a large share of D1 writes | Move them to the Workers Rate Limiting binding, which keeps no D1 state. Its availability on the Free plan is not documented, so confirm it first. |
+| An event needs more than Rp 50.000.000 in one bill | Move the library's proportional `distribute` to BigInt (`ponytail:` note in `web/src/lib/doc.ts`). |
+| The service worker cache grows noticeably | Generate a precache list at build time (`ponytail:` note in `web/public/sw.js`). |
 
 ## 4. Trade-offs and known limitations
 

@@ -75,6 +75,19 @@ It remains in git history before the revamp commit. The arithmetic library,
       third parties do not copy `crypto.ts` by hand. Build it when a
       second client actually exists.
 
+## R6: Ready for public traffic
+
+- [x] Reads spend no D1 writes. One request opens an event, with its
+      claims.
+- [x] Per-address write limits sized to the daily budget. IPv6 keyed by /64.
+- [x] Event JSON gzipped before encryption. The largest legal event still
+      fits the ciphertext cap.
+- [x] Creation stops at 450 MB, below D1 Free's 500 MB cap.
+- [x] Clear "busy" message when a platform limit is hit. Drafts are never
+      lost.
+- [ ] After launch: watch D1 rows written per day for a week, and decide on
+      Workers Paid using the triggers in Architecture §3.
+
 ## Open items
 
 | Gap | Why it matters |

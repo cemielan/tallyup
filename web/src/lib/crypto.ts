@@ -4,6 +4,11 @@
  * AES-256-GCM via WebCrypto. The key is 32 random bytes that live only in
  * the share link's `#fragment`, which browsers never send to a server. The
  * server stores `{ ciphertext, iv }` and cannot read either.
+ *
+ * Plaintext is gzipped before encryption. Event JSON is repetitive (the same
+ * person ids on every item), so this shrinks it several times over, which is
+ * what lets the free 500 MB database hold that many more events
+ * (docs/02-ARCHITECTURE.md §3).
  */
 
 export interface Sealed {
@@ -36,6 +41,11 @@ function importKey(key: string): Promise<CryptoKey> {
   return crypto.subtle.importKey('raw', fromBase64Url(key), 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
+async function pipe(bytes: Uint8Array<ArrayBuffer>, through: CompressionStream | DecompressionStream) {
+  const stream = new Blob([bytes]).stream().pipeThrough(through);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -43,20 +53,24 @@ export async function seal(key: string, value: unknown): Promise<Sealed> {
   // A fresh 96-bit nonce per encryption. Reusing one under the same key
   // breaks GCM outright, so it is never derived from anything.
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    await importKey(key),
-    encoder.encode(JSON.stringify(value)),
-  );
+  const plain = await pipe(encoder.encode(JSON.stringify(value)), new CompressionStream('gzip'));
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await importKey(key), plain);
   return { ciphertext: toBase64Url(new Uint8Array(data)), iv: toBase64Url(iv) };
 }
 
-/** Decrypt and JSON-parse. Throws on a wrong key or tampered ciphertext (GCM authenticates). */
+/**
+ * Decrypt and parse. Throws on a wrong key or tampered ciphertext (GCM
+ * authenticates). Accepts gzipped or plain JSON, as docs/04-API-SPEC.md §1
+ * allows either: gzip always starts 1f 8b, and JSON never does.
+ */
 export async function open(key: string, sealed: Sealed): Promise<unknown> {
-  const data = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: fromBase64Url(sealed.iv) },
-    await importKey(key),
-    fromBase64Url(sealed.ciphertext),
+  let bytes = new Uint8Array(
+    await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromBase64Url(sealed.iv) },
+      await importKey(key),
+      fromBase64Url(sealed.ciphertext),
+    ),
   );
-  return JSON.parse(decoder.decode(data));
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = await pipe(bytes, new DecompressionStream('gzip'));
+  return JSON.parse(decoder.decode(bytes));
 }

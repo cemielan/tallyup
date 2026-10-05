@@ -52,8 +52,11 @@ app.get('/health', (c) => c.json({ status: 'ok', environment: c.env.ENVIRONMENT 
 app.get('/v1/openapi.json', (c) => c.json(openApiDocument(new URL('/v1', c.req.url).toString())));
 app.get('/docs', (c) => c.html(docsPage('/v1/openapi.json')));
 
-app.use('/v1/shares', rateLimit(RATE_LIMITS.api));
-app.use('/v1/shares/*', rateLimit(RATE_LIMITS.api));
+// Updates and deletes only. Reads are not limited (see RATE_LIMITS), and the
+// two POSTs carry their own, stricter limits; stacking this one on them would
+// spend a second D1 write per create or claim for no extra protection.
+const writeLimit = rateLimit(RATE_LIMITS.write);
+app.on(['PUT', 'DELETE'], '/v1/shares/*', writeLimit);
 app.route('/v1/shares', shareRoutes);
 
 app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'No such endpoint' } }, 404));

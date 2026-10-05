@@ -22,8 +22,25 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 const shares = new Hono<AppEnv>();
 
+/**
+ * Refuse new shares near the database's size cap. Only creation grows the
+ * database for long: updates replace a row, claims are capped per share, and
+ * the sweep frees space daily. Hitting the hard cap would instead break
+ * writes for every existing event, so this fails early and only for new ones.
+ */
+async function assertCapacity(db: D1Database, softLimitMb: string) {
+  const { meta } = await db.prepare('SELECT 1').run();
+  const limitBytes = (Number(softLimitMb) || 450) * 1024 * 1024;
+  if (meta.size_after > limitBytes) {
+    throw new ApiError('AT_CAPACITY', 'Tallyup is full right now. Try again tomorrow.', {
+      headers: { 'Retry-After': '86400' },
+    });
+  }
+}
+
 shares.post('/', rateLimit(RATE_LIMITS.create), async (c) => {
   const body = await parseBody(c, createShareSchema);
+  await assertCapacity(c.env.DB, c.env.DB_SOFT_LIMIT_MB);
   const id = newShareId();
   const editToken = newEditToken();
   const now = Date.now();
@@ -50,8 +67,26 @@ shares.post('/', rateLimit(RATE_LIMITS.create), async (c) => {
 shares.use('/:shareId', loadShare);
 shares.use('/:shareId/*', loadShare);
 
-shares.get('/:shareId', (c) => {
+/**
+ * The share and its pending claims in one response. Opening an event is the
+ * most common request, and the Worker request budget is per request
+ * (docs/02-ARCHITECTURE.md §3), so a viewer costs one request, not two.
+ * Claims are bounded by MAX_CLAIMS_PER_SHARE, so no pagination is needed.
+ */
+shares.get('/:shareId', async (c) => {
   const share = c.get('share');
+  const claims = await c
+    .get('db')
+    .select({
+      id: schema.shareClaims.id,
+      ciphertext: schema.shareClaims.ciphertext,
+      iv: schema.shareClaims.iv,
+      createdAt: schema.shareClaims.createdAt,
+    })
+    .from(schema.shareClaims)
+    .where(eq(schema.shareClaims.shareId, share.id))
+    .orderBy(schema.shareClaims.createdAt);
+
   return c.json({
     id: share.id,
     ciphertext: share.ciphertext,
@@ -59,6 +94,7 @@ shares.get('/:shareId', (c) => {
     version: share.version,
     updatedAt: iso(share.updatedAt),
     expiresAt: iso(share.expiresAt),
+    claims: claims.map((row) => ({ ...row, createdAt: iso(row.createdAt) })),
   });
 });
 
@@ -102,23 +138,6 @@ shares.delete('/:shareId', requireEditToken, async (c) => {
   ]);
 
   return c.body(null, 204);
-});
-
-shares.get('/:shareId/claims', async (c) => {
-  const rows = await c
-    .get('db')
-    .select({
-      id: schema.shareClaims.id,
-      ciphertext: schema.shareClaims.ciphertext,
-      iv: schema.shareClaims.iv,
-      createdAt: schema.shareClaims.createdAt,
-    })
-    .from(schema.shareClaims)
-    .where(eq(schema.shareClaims.shareId, c.get('share').id))
-    .orderBy(schema.shareClaims.createdAt);
-
-  // Bounded by MAX_CLAIMS_PER_SHARE, so no pagination is needed.
-  return c.json({ claims: rows.map((row) => ({ ...row, createdAt: iso(row.createdAt) })) });
 });
 
 shares.post('/:shareId/claims', rateLimit(RATE_LIMITS.claim), async (c) => {

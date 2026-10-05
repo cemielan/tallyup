@@ -3,16 +3,7 @@
   import { slide } from 'svelte/transition';
   import BillCard from '../components/BillCard.svelte';
   import Receipt from '../components/Receipt.svelte';
-  import {
-    ApiError,
-    createEvent,
-    deleteClaim,
-    deleteEvent,
-    loadClaims,
-    loadEvent,
-    updateEvent,
-    type ClaimRow,
-  } from '../lib/api';
+  import { ApiError, createEvent, deleteClaim, deleteEvent, loadEvent, updateEvent, type ClaimRow } from '../lib/api';
   import { newKey } from '../lib/crypto';
   import { LIMITS, localId, newBill, newDoc, parseDoc, problemOf, type EventDoc, type Person } from '../lib/doc';
   import { forgetEntry, getEntry, loadDraft, requestPersistence, saveDraft, saveEntry, type Entry } from '../lib/history';
@@ -62,8 +53,8 @@
       doc = loaded.doc;
       version = loaded.version;
       expiresAt = loaded.expiresAt;
+      claims = loaded.claims;
       entry = saveEntry({ id, title: doc.title });
-      await refreshClaims();
     } catch (error) {
       loadError = error instanceof Error ? error.message : 'Could not load this event.';
     }
@@ -75,10 +66,12 @@
     if (!entry?.token) saveDraft($state.snapshot(doc));
   });
 
+  /** Fetch new claims only. The document on screen may hold unsaved edits, so it is left alone. */
   async function refreshClaims() {
     if (!entry) return;
     try {
-      claims = await loadClaims(entry.id, entry.key);
+      claims = (await loadEvent(entry.id, entry.key)).claims;
+      if (claims.length === 0) toast('No new payments yet');
     } catch (error) {
       fail(error);
     }

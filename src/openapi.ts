@@ -88,6 +88,7 @@ export function openApiDocument(serverUrl: string): object {
             201: ok('Created. The response carries the edit token; it is never shown again'),
             422: errorResponse('VALIDATION_ERROR'),
             429: errorResponse('RATE_LIMITED'),
+            503: errorResponse('AT_CAPACITY'),
           },
         },
       },
@@ -95,7 +96,10 @@ export function openApiDocument(serverUrl: string): object {
         get: {
           summary: 'Fetch a share ciphertext',
           parameters: [shareId],
-          responses: { 200: ok('The ciphertext and its version'), 404: errorResponse('NOT_FOUND') },
+          responses: {
+            200: ok('The ciphertext, its version, and pending claims (ciphertext)'),
+            404: errorResponse('NOT_FOUND'),
+          },
         },
         put: {
           summary: 'Replace the ciphertext (compare-and-swap on version)',
@@ -117,11 +121,6 @@ export function openApiDocument(serverUrl: string): object {
         },
       },
       '/shares/{shareId}/claims': {
-        get: {
-          summary: 'List pending payment claims (ciphertext)',
-          parameters: [shareId],
-          responses: { 200: ok('Claims, oldest first') },
-        },
         post: {
           summary: 'Add an encrypted "I paid" claim',
           parameters: [shareId],

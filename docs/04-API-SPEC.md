@@ -18,7 +18,7 @@ the Tallyup PWA, a client MUST:
 | Key | 32 random bytes from a CSPRNG. Text form: base64url, no padding (43 chars). |
 | Cipher | AES-256-GCM, 128-bit tag (the WebCrypto default). No additional authenticated data. |
 | IV | 12 random bytes, **fresh for every encryption**. Never reuse one under the same key. Text form: base64url, no padding (16 chars). |
-| Plaintext | UTF-8 JSON of the event document (`docs/03-DATA-MODEL.md` §2) or a claim document. |
+| Plaintext | UTF-8 JSON of the event document (`docs/03-DATA-MODEL.md` §2) or a claim document, **optionally gzip-compressed** (RFC 1952). Writers SHOULD compress; readers MUST accept both. A gzip stream starts `1f 8b`, which JSON never does. |
 | Ciphertext | The cipher output with the tag appended, as WebCrypto returns it. Text form: base64url, no padding. |
 | View link | `https://<host>/#/s/<shareId>/<key>` |
 | Host link | `https://<host>/#/e/<shareId>/<key>/<editToken>` |
@@ -46,12 +46,15 @@ Body (unknown fields are rejected):
 ```
 
 The edit token is returned **only here**. The server keeps a hash of it.
-Limited to 30 per IP per hour.
+Limited to 30 per address per hour. Answers `503 AT_CAPACITY` when the
+database is near its size cap; existing shares keep working.
 
 ### `GET /shares/{id}`: read
 
-`200`: `{ id, ciphertext, iv, version, updatedAt, expiresAt }`. `404` if the
-share is unknown or expired.
+`200`: `{ id, ciphertext, iv, version, updatedAt, expiresAt, claims }`,
+where `claims` is `[{ id, ciphertext, iv, createdAt }]`, oldest first, at
+most 50. The share and its claims come back together so that opening an
+event costs one request. `404` if the share is unknown or expired.
 
 ### `PUT /shares/{id}`: update (edit token)
 
@@ -70,17 +73,12 @@ expiry moves to 30 days from now.
 
 `204`. Claims are deleted with the share.
 
-### `GET /shares/{id}/claims`: list claims
-
-`200 { claims: [{ id, ciphertext, iv, createdAt }] }`, oldest first. There
-are at most 50 claims, so the list is never paginated.
-
 ### `POST /shares/{id}/claims`: add a claim
 
 Body: `{ ciphertext (≤ 2000), iv }`. Anyone holding the share id may
 claim, because claims change nothing until the host confirms one.
 Responses: `201 { id, createdAt }`, `409 CLAIM_LIMIT` once 50 claims are
-waiting. Limited to 20 per IP per hour.
+waiting. Limited to 20 per address per hour.
 
 ### `DELETE /shares/{id}/claims/{claimId}`: remove a claim (edit token)
 
@@ -100,9 +98,18 @@ Declining a claim is step 4 alone.
 
 ## 3. Rate limits
 
-Every IP gets 120 requests per minute across `/v1/shares`. Creation and
-claims have the tighter limits above. A request over the limit gets
-`429 RATE_LIMITED` with `Retry-After` in seconds.
+Per client address (IPv4, or the /64 prefix of an IPv6 address), per hour:
+
+| Requests | Limit |
+|---|---|
+| `POST /shares` | 30 |
+| `POST /shares/{id}/claims` | 20 |
+| `PUT` and `DELETE` | 120 |
+| `GET` | not limited |
+
+A request over the limit gets `429 RATE_LIMITED` with `Retry-After` in
+seconds. Reads are not limited because each check costs a database write,
+and the free daily write budget is shared by the whole app (Architecture §3).
 
 ## 4. Errors
 
@@ -123,6 +130,11 @@ One envelope, always:
 | `PAYLOAD_TOO_LARGE` | 413 | Body over 64 KiB. |
 | `RATE_LIMITED` | 429 | See §3. |
 | `INTERNAL_ERROR` | 500 | A bug. Logged server-side; never carries detail. |
+| `AT_CAPACITY` | 503 | Database near its size cap; only creation is refused. |
+
+Responses that do **not** carry this envelope come from the platform, not
+the app: typically the free daily request limit is used up. Treat them as
+"try again later".
 
 ## 5. A full flow with curl
 

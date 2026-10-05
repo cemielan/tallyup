@@ -26,6 +26,8 @@ export const LIMITS = {
    * by moving the library's `distribute` to BigInt.
    */
   amount: 50_000_000,
+  /** Must equal MAX_SHARE_CIPHERTEXT in src/validation.ts; test/web/split.test.ts checks. */
+  ciphertext: 48_000,
 } as const;
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,24}$/);

@@ -32,6 +32,9 @@ crons = ["0 3 * * *"]
 
 [vars]
 ENVIRONMENT = "development"
+# New shares are refused above this database size (src/routes/shares.ts).
+# D1 Free caps a database at 500 MB; raise this after moving to Workers Paid.
+DB_SOFT_LIMIT_MB = "450"
 
 [[d1_databases]]
 binding = "DB"
@@ -51,6 +54,7 @@ crons = ["0 3 * * *"]
 
 [env.production.vars]
 ENVIRONMENT = "production"
+DB_SOFT_LIMIT_MB = "450"
 
 [[env.production.d1_databases]]
 binding = "DB"

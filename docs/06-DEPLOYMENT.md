@@ -163,6 +163,35 @@ watch:
 
 - **4xx/5xx rates on `/v1/shares`.** A rise in `422` usually means a client
   build is sending a stale shape.
-- **D1 rows written per day.** Every API request writes one rate-limit
-  counter, so this is the free-tier number that moves first.
+- **D1 rows written per day.** This is the free-tier number that moves
+  first (about 45 per event, Architecture §3). Past about 60,000 a day,
+  plan the move to Workers Paid.
 - **Cron trigger runs.** A failing sweep shows up as storage growth.
+
+## 9. Before you share it publicly
+
+Run through this once, after the first production deploy:
+
+- [ ] **Step 4 checks pass** on the live URL, including the
+      `content-security-policy` header.
+- [ ] **A real phone run:** create, scan, share, open in a private window,
+      claim, and confirm. Do it on Android Chrome and on iPhone Safari, both
+      in the browser and installed to the Home Screen.
+- [ ] **A notification for usage.** The Free plan never bills, but it does
+      stop. Check the Workers and D1 usage pages daily for the first week.
+      The numbers to watch, and the point at which to upgrade, are in
+      Architecture §3.
+- [ ] **The cron sweep has run once.** It appears under the Worker's Cron
+      Triggers tab the morning after deploy.
+- [ ] **A privacy note on the site.** It says what is stored (encrypted
+      events, for 30 days), what is not (photos, plaintext), and who can
+      see bank details (anyone with the link). Events hold names and bank
+      account numbers, which are personal data even when encrypted.
+- [ ] **If this runs as a BINUS service,** route it through the IT
+      Division's technology and security review before announcing it. The
+      review covers the Cloudflare account, the domain and the privacy note.
+
+A custom domain is optional. `tallyup.<subdomain>.workers.dev` is free and
+has HTTPS out of the box. A domain you own can be attached for free in the
+Cloudflare dashboard (Workers → your Worker → Settings → Domains & Routes).
+Only the domain registration itself costs money.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { open, seal, newKey } from '../../web/src/lib/crypto';
-import { newBill, newDoc, parseDoc, type EventDoc } from '../../web/src/lib/doc';
+import { MAX_SHARE_CIPHERTEXT } from '../../src/validation';
+import { fromBase64Url, newKey, open, seal, toBase64Url } from '../../web/src/lib/crypto';
+import { LIMITS, newBill, newDoc, parseDoc, type EventDoc } from '../../web/src/lib/doc';
 import { parseRoute } from '../../web/src/lib/links';
 import { parseRupiah } from '../../web/src/lib/money';
 import { breakdownBill, summarize } from '../../web/src/lib/split';
@@ -132,6 +133,36 @@ describe('parseDoc', () => {
 });
 
 describe('encryption', () => {
+  it('uses the same ciphertext cap as the server', () => {
+    expect(LIMITS.ciphertext).toBe(MAX_SHARE_CIPHERTEXT);
+  });
+
+  it('compresses, so the largest legal event still fits the cap', async () => {
+    const doc = dinner();
+    for (let i = doc.people.length; i < LIMITS.people; i += 1) doc.people.push({ id: `p${i}`, name: `Person ${i}` });
+    const ids = doc.people.map((p) => p.id);
+    doc.bills = Array.from({ length: LIMITS.bills }, (_, b) => ({
+      ...newBill(ids[0], b + 1),
+      items: Array.from({ length: LIMITS.items }, (_, i) => ({
+        name: `Item number ${i} with a longish name`,
+        price: 12_345,
+        qty: 2,
+        for: ids.slice(0, (i % 8) + 1),
+      })),
+    }));
+    const sealed = await seal(newKey(), doc);
+    expect(JSON.stringify(doc).length).toBeGreaterThan(LIMITS.ciphertext);
+    expect(sealed.ciphertext.length).toBeLessThan(LIMITS.ciphertext);
+  });
+
+  it('still opens plain, uncompressed JSON from third-party clients', async () => {
+    const key = newKey();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const raw = await crypto.subtle.importKey('raw', fromBase64Url(key), 'AES-GCM', false, ['encrypt']);
+    const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, raw, new TextEncoder().encode('{"hello":1}'));
+    expect(await open(key, { ciphertext: toBase64Url(new Uint8Array(data)), iv: toBase64Url(iv) })).toEqual({ hello: 1 });
+  });
+
   it('round-trips a document', async () => {
     const key = newKey();
     const doc = dinner();

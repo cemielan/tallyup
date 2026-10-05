@@ -49,12 +49,37 @@ confirms it.
 
 ## 3. Rate limiting and abuse
 
-- Every IP: 120 requests per minute on `/v1/shares/*`. Creates: 30 per hour.
-  Claims: 20 per hour. Fixed-window counters live in D1 (Architecture §1
-  explains why not KV), and a blocked request gets `429` + `Retry-After`.
+- **Write requests MUST be rate limited** per client address, in fixed
+  hourly windows held in D1:
+  - creates: 30 per hour
+  - claims: 20 per hour
+  - updates and deletes: 120 per hour
+
+  A blocked request gets `429` + `Retry-After`. These numbers keep one
+  address well under the app-wide D1 write budget, so a single abuser
+  cannot take the service down for everyone.
+- **IPv6 clients MUST be keyed by their /64 prefix.** One host commonly
+  owns a whole /64, and would otherwise reset its limit by changing
+  address. IPv4-mapped addresses are treated as IPv4.
+- **Reads are not limited.** Each check would cost a D1 write, and the
+  free write budget is shared by the whole app. A 429 still counts against
+  the Worker request budget, so limiting reads would not protect it anyway.
+  Read floods are left to Cloudflare's network-level DDoS protection.
 - Unanswered claims MUST be capped at 50 per share.
+- Creation MUST stop near the database size cap (`DB_SOFT_LIMIT_MB`), so a
+  full database can never break existing events.
 - Shares MUST expire 30 days after the last update. Reads MUST honour
   expiry before the sweep runs.
+
+**What these limits cannot stop:** an attacker with many addresses can
+still use up a free daily budget. The platform caps the damage: there is no
+bill, and service resumes at 00:00 UTC. The escalation path is in
+Architecture §3, "Upgrade triggers": Turnstile on create, then Workers Paid.
+
+**Known cost of per-address limits:** everyone behind one NAT (a campus or
+office network) shares an address, and so shares one limit. Thirty new
+events an hour from a single building is a lot, but it is reachable. Watch
+for `429`s on `POST /shares` after launch.
 
 ## 4. Input validation
 

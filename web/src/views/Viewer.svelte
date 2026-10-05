@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import Receipt from '../components/Receipt.svelte';
-  import { loadClaims, loadEvent, sendClaim, type ClaimRow } from '../lib/api';
+  import { loadEvent, sendClaim, type ClaimRow } from '../lib/api';
   import type { EventDoc } from '../lib/doc';
   import { getEntry, saveEntry } from '../lib/history';
   import { rp } from '../lib/money';
@@ -33,8 +33,8 @@
       doc = loaded.doc;
       expiresAt = loaded.expiresAt;
       if (me && !doc.people.some((p) => p.id === me)) me = undefined;
+      claims = loaded.claims;
       entry = saveEntry({ id, key, title: doc.title });
-      claims = await loadClaims(id, key);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Could not open this link.';
     }

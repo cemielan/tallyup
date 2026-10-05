@@ -1,7 +1,7 @@
-import { env } from 'cloudflare:test';
+import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { sweepExpired } from '../src/index';
-import { RATE_LIMITS } from '../src/middleware';
+import { RATE_LIMITS, clientKey } from '../src/middleware';
 import { MAX_CLAIMS_PER_SHARE, MAX_SHARE_CIPHERTEXT } from '../src/validation';
 import { api, createShare, expectError, json, nextIp, sealed } from './helpers';
 
@@ -195,7 +195,7 @@ describe('claims', () => {
       201,
     );
 
-    const listed = await json(await api(`/v1/shares/${share.id}/claims`));
+    const listed = await json(await api(`/v1/shares/${share.id}`));
     expect(listed.claims).toEqual([
       expect.objectContaining({ id: claim.id, ...sealed('claim') }),
     ]);
@@ -212,7 +212,7 @@ describe('claims', () => {
       }),
       204,
     );
-    expect((await json(await api(`/v1/shares/${share.id}/claims`))).claims).toEqual([]);
+    expect((await json(await api(`/v1/shares/${share.id}`))).claims).toEqual([]);
   });
 
   it('cannot delete a claim through another share', async () => {
@@ -306,5 +306,59 @@ describe('scheduled handler', () => {
     await env.DB.prepare('UPDATE shares SET expires_at = ? WHERE id = ?').bind(Date.now() - 1, share.id).run();
     await worker.scheduled({} as ScheduledController, env);
     expect(await env.DB.prepare('SELECT id FROM shares WHERE id = ?').bind(share.id).first()).toBeNull();
+  });
+});
+
+describe('free-tier budget', () => {
+  it('reads spend no D1 writes on rate limiting', async () => {
+    const share = await createShare();
+    const ip = nextIp();
+    for (let i = 0; i < 25; i += 1) await json(await api(`/v1/shares/${share.id}`, { ip }));
+    const rows = await env.DB.prepare('SELECT COUNT(*) AS n FROM rate_limits WHERE key LIKE ?')
+      .bind(`%:${ip}:%`)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(0);
+  });
+
+  it('caps writes per address per hour', async () => {
+    const share = await createShare();
+    const ip = nextIp();
+    const put = (version: number) =>
+      api(`/v1/shares/${share.id}`, { method: 'PUT', ip, token: share.editToken, body: { ...sealed(), version } });
+    for (let v = 1; v <= RATE_LIMITS.write.limit; v += 1) await json(await put(v));
+    await expectError(await put(RATE_LIMITS.write.limit + 1), 429, 'RATE_LIMITED');
+  }, 30_000);
+
+  it('refuses new shares near the database size cap, with the envelope', async () => {
+    const { default: worker } = await import('../src/index');
+    const request = new Request('https://tallyup.test/v1/shares', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': nextIp() },
+      body: JSON.stringify(sealed()),
+    });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(request, { ...env, DB_SOFT_LIMIT_MB: '0.000001' }, ctx);
+    await waitOnExecutionContext(ctx);
+    await expectError(response, 503, 'AT_CAPACITY');
+  });
+});
+
+describe('clientKey', () => {
+  it('keeps IPv4 addresses whole', () => {
+    expect(clientKey('203.0.113.7')).toBe('203.0.113.7');
+  });
+
+  it('groups IPv6 by /64 so rotating inside a prefix does not reset limits', () => {
+    expect(clientKey('2001:db8:abcd:12:1:2:3:4')).toBe('2001:db8:abcd:12::/64');
+    expect(clientKey('2001:DB8:ABCD:0012::99')).toBe('2001:db8:abcd:12::/64');
+    expect(clientKey('2001:db8::1')).toBe('2001:db8:0:0::/64');
+  });
+
+  it('treats IPv4-mapped IPv6 as the IPv4 client it is', () => {
+    expect(clientKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+  });
+
+  it('has a key for a request with no address', () => {
+    expect(clientKey(undefined)).toBe('unknown');
   });
 });
