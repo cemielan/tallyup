@@ -8,7 +8,9 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 export const ERROR_CODES = {
   VALIDATION_ERROR: 422,
   UNAUTHENTICATED: 401,
+  PASS_REQUIRED: 401,
   FORBIDDEN: 403,
+  CHALLENGE_FAILED: 403,
   NOT_FOUND: 404,
   VERSION_CONFLICT: 409,
   CLAIM_LIMIT: 409,

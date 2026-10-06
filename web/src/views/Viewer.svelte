@@ -3,10 +3,11 @@
   import Receipt from '../components/Receipt.svelte';
   import { loadEvent, sendClaim, type ClaimRow } from '../lib/api';
   import type { EventDoc } from '../lib/doc';
-  import { getEntry, saveEntry } from '../lib/history';
+  import { forgetEntry, getEntry, saveEntry } from '../lib/history';
+  import { go } from '../lib/links';
   import { rp } from '../lib/money';
   import { summarize } from '../lib/split';
-  import { colorAt, copyText, fail, initials, toast } from '../lib/ui.svelte';
+  import { colorAt, copyText, fail, initials, maskAccount, toast } from '../lib/ui.svelte';
   import type { Transfer } from 'debt-simplify';
 
   let { id, key }: { id: string; key: string } = $props();
@@ -19,6 +20,8 @@
   let entry = $state(untrack(() => getEntry(id)));
   let me = $state(untrack(() => entry?.meId));
   let sending = $state(false);
+  /** Receivers whose full account number this viewer chose to show. */
+  let revealed = $state<Record<string, boolean>>({});
   let printId = $state(0);
 
   const summary = $derived(doc ? summarize(doc) : undefined);
@@ -45,6 +48,13 @@
     entry = saveEntry({ id, meId: pid });
   }
 
+  /** For shared computers: drop this event, and who you said you are, from this browser. */
+  function forget() {
+    forgetEntry(id);
+    toast('Removed from this device');
+    go('#/');
+  }
+
   const pending = (t: Transfer) => claims.some((c) => c.from === t.from && c.to === t.to && c.amount === t.amount);
 
   async function claim(t: Transfer) {
@@ -65,7 +75,10 @@
 <main class="stack">
   <header class="spread">
     <a class="btn btn-small" href="#/">← Tallyup</a>
-    {#if entry?.token}<a class="btn btn-small btn-sun" href="#/h/{id}">✏️ Edit</a>{/if}
+    <div class="row">
+      {#if entry?.token}<a class="btn btn-small btn-sun" href="#/h/{id}">✏️ Edit</a>{/if}
+      {#if doc}<button class="btn btn-small" onclick={forget}>Forget on this device</button>{/if}
+    </div>
   </header>
 
   {#if error}
@@ -103,8 +116,11 @@
               <div class="bank">
                 <div class="label">{to.payment.bankName}</div>
                 <div class="spread">
-                  <span class="acct">{to.payment.accountNumber}</span>
-                  <button class="btn btn-small" onclick={() => to.payment && copyText(to.payment.accountNumber, 'Account number copied')}>Copy</button>
+                  <span class="acct">{revealed[t.to] ? to.payment.accountNumber : maskAccount(to.payment.accountNumber)}</span>
+                  <div class="row">
+                    <button class="btn btn-small" onclick={() => (revealed[t.to] = !revealed[t.to])}>{revealed[t.to] ? 'Hide' : 'Show'}</button>
+                    <button class="btn btn-small" onclick={() => to.payment && copyText(to.payment.accountNumber, 'Account number copied')}>Copy</button>
+                  </div>
                 </div>
                 {#if to.payment.accountHolder}<div class="muted small">a.n. {to.payment.accountHolder}</div>{/if}
               </div>

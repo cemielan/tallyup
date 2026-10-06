@@ -4,7 +4,7 @@ import { fromBase64Url, newKey, open, seal, toBase64Url } from '../../web/src/li
 import { LIMITS, newBill, newDoc, parseDoc, type EventDoc } from '../../web/src/lib/doc';
 import { parseRoute } from '../../web/src/lib/links';
 import { parseRupiah } from '../../web/src/lib/money';
-import { breakdownBill, summarize } from '../../web/src/lib/split';
+import { breakdownBill, summarize, withoutBankDetailsIfSettled } from '../../web/src/lib/split';
 
 function dinner(): EventDoc {
   const doc = newDoc('Ana');
@@ -106,6 +106,34 @@ describe('summarize', () => {
     const doc = dinner();
     doc.settlements.push({ id: 's1', from: 'budi', to: doc.people[0].id, amount: 15_000, at: 1 });
     expect(summarize(doc).transfers).toContainEqual({ from: 'budi', to: doc.people[0].id, amount: 50_000 });
+  });
+});
+
+describe('withoutBankDetailsIfSettled', () => {
+  const withBank = () => {
+    const doc = dinner();
+    doc.people[0].payment = { bankName: 'BCA', accountNumber: '1234567890', accountHolder: 'Ana' };
+    return doc;
+  };
+
+  it('keeps bank details while anyone still owes', () => {
+    expect(withoutBankDetailsIfSettled(withBank())).toBeUndefined();
+  });
+
+  it('drops them once everyone has paid', () => {
+    const doc = withBank();
+    const ana = doc.people[0].id;
+    doc.settlements.push(
+      { id: 's1', from: 'budi', to: ana, amount: 65_000, at: 1 },
+      { id: 's2', from: 'cici', to: ana, amount: 5_000, at: 2 },
+    );
+    const cleared = withoutBankDetailsIfSettled(doc);
+    expect(cleared?.people.some((p) => p.payment)).toBe(false);
+    expect(cleared?.settlements).toHaveLength(2);
+  });
+
+  it('does nothing when there were no bank details', () => {
+    expect(withoutBankDetailsIfSettled(dinner())).toBeUndefined();
   });
 });
 

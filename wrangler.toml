@@ -1,10 +1,18 @@
 # Cloudflare Workers configuration.
 #
-# The Worker holds no secrets: event data is encrypted in the browser and
-# the server stores only ciphertext (docs/05-SECURITY.md §2).
+# Event data is encrypted in the browser; the server stores only ciphertext
+# (docs/05-SECURITY.md §2). Its two secrets guard against abuse and cannot
+# read anything. They live in .dev.vars locally and come from
+# `wrangler secret put` in production, never from this file:
+#   TURNSTILE_SECRET   Cloudflare Turnstile secret key
+#   PASS_SECRET        signs client passes
 
 name = "tallyup"
 main = "src/index.ts"
+# Once a custom domain is attached, turn the workers.dev address off so
+# nobody can reach the Worker around the domain's WAF rules
+# (docs/06-DEPLOYMENT.md §9):
+# workers_dev = false
 # Pinned to the newest date the workerd bundled with the test runner accepts,
 # so `npm test` and `wrangler deploy` agree on runtime behavior. Raise it
 # only after the Vitest pool ships a workerd that supports the newer date.

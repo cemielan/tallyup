@@ -9,7 +9,7 @@
   import { forgetEntry, getEntry, loadDraft, requestPersistence, saveDraft, saveEntry, type Entry } from '../lib/history';
   import { go, hostLink, viewLink } from '../lib/links';
   import { rp } from '../lib/money';
-  import { summarize } from '../lib/split';
+  import { summarize, withoutBankDetailsIfSettled } from '../lib/split';
   import { colorAt, copyText, fail, initials, shareUrl, toast } from '../lib/ui.svelte';
 
   /** Undefined for a new draft; a share id to edit a published event. */
@@ -29,6 +29,8 @@
   let newName = $state('');
   let sheet = $state<HTMLDialogElement>();
   let printId = $state(0);
+  /** Shared or public computer: keep nothing about this event in this browser. */
+  let sharedDevice = $state(false);
 
   const summary = $derived.by(() => {
     try {
@@ -61,9 +63,10 @@
     loading = false;
   });
 
-  // An unpublished draft survives a reload or a closed tab.
+  // An unpublished draft survives a reload or a closed tab, except on a shared computer.
   $effect(() => {
-    if (!entry?.token) saveDraft($state.snapshot(doc));
+    if (sharedDevice) saveDraft(undefined);
+    else if (!entry?.token) saveDraft($state.snapshot(doc));
   });
 
   /** Fetch new claims only. The document on screen may hold unsaved edits, so it is left alone. */
@@ -88,23 +91,36 @@
       return false;
     }
 
+    // Once nobody owes anything, nobody needs an account number. Drop them
+    // rather than leave them readable by every link holder for 30 more days.
+    const cleared = withoutBankDetailsIfSettled(plain);
+    if (cleared) plain = cleared;
+
     busy = true;
     try {
       if (!entry?.token) {
         const key = newKey();
         const created = await createEvent(key, plain);
-        entry = saveEntry({ id: created.id, key, token: created.editToken, title: plain.title, meId: plain.people[0].id });
+        const fresh = { id: created.id, key, token: created.editToken, title: plain.title, meId: plain.people[0].id };
+        // On a shared computer the credentials live only in this tab.
+        entry = sharedDevice ? { ...fresh, savedAt: Date.now() } : saveEntry(fresh);
         version = created.version;
         expiresAt = created.expiresAt;
         saveDraft(undefined);
-        // Stay on this screen; a reload now lands on the host route.
-        history.replaceState(null, '', `#/h/${created.id}`);
-        requestPersistence();
+        if (!sharedDevice) {
+          // Stay on this screen; a reload now lands on the host route.
+          history.replaceState(null, '', `#/h/${created.id}`);
+          requestPersistence();
+        }
       } else {
         const updated = await updateEvent(entry.id, entry.key, entry.token, plain, version);
         version = updated.version;
         expiresAt = updated.expiresAt;
-        entry = saveEntry({ id: entry.id, title: plain.title });
+        entry = sharedDevice ? { ...entry, title: plain.title } : saveEntry({ id: entry.id, title: plain.title });
+      }
+      if (cleared) {
+        for (const person of doc.people) person.payment = undefined;
+        toast('Everyone has paid, so bank details were removed from the link.');
       }
       return true;
     } catch (error) {
@@ -216,6 +232,15 @@
     } catch (error) {
       fail(error);
     }
+  }
+
+  /** For shared computers: drop this event from this browser. Edit access goes with it. */
+  function forgetHere() {
+    if (!entry) return;
+    if (!confirm('Remove this event from this device? Copy the host link first if you want to edit it later.')) return;
+    forgetEntry(entry.id);
+    toast('Removed from this device');
+    go('#/');
   }
 
   function startOver() {
@@ -376,15 +401,23 @@
         {#if expiresAt}
           <p class="muted small">The link expires {new Date(expiresAt).toLocaleDateString('id-ID', { dateStyle: 'long' })}, 30 days after your last save.</p>
         {/if}
+        <button class="btn btn-small" onclick={() => entry?.token && copyText(hostLink(entry.id, entry.key, entry.token), 'Host link copied. Keep it private!')}>
+          Copy host link (private)
+        </button>
         <details>
           <summary>Danger zone</summary>
           <div class="stack danger">
+            <button class="btn btn-small" onclick={forgetHere}>Forget on this device</button>
             <button class="btn btn-small" disabled={busy} onclick={resetLink}>Reset share link</button>
             <button class="btn btn-small btn-danger" disabled={busy} onclick={remove}>Delete event</button>
           </div>
         </details>
       </section>
     {:else}
+      <label class="row shared-device">
+        <input type="checkbox" bind:checked={sharedDevice} />
+        <span>Shared or public computer: don't remember this event here</span>
+      </label>
       <button class="btn btn-small btn-danger start-over" onclick={startOver}>Start over</button>
     {/if}
 
@@ -402,8 +435,11 @@
           {#key printId}
             <Receipt {doc} {summary} {expiresAt} />
           {/key}
-          <details class="host-link">
+          <details class="host-link" open={sharedDevice}>
             <summary>Save your host link</summary>
+            {#if sharedDevice}
+              <p class="small"><strong>This computer won't remember the event.</strong> Copy the host link now, or you won't be able to edit it again.</p>
+            {/if}
             <p class="small">
               This one lets anyone <strong>edit</strong> the event. Keep it private, somewhere like your notes app, so you can edit
               from another phone or after clearing your browser.
@@ -520,6 +556,12 @@
 
   .start-over {
     justify-self: center;
+  }
+
+  .shared-device {
+    justify-content: center;
+    font-size: 0.9rem;
+    flex-wrap: nowrap;
   }
 
   .sheet {

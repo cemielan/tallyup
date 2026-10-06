@@ -1,17 +1,21 @@
 # API specification
 
-Base URL: `https://<your-worker>/v1`. JSON in, JSON out. The live OpenAPI
-document is at `/v1/openapi.json`, and an interactive reference is at
-`/docs`. Both are generated from the same Zod schemas the routes enforce.
+**Internal.** This API exists to serve the Tallyup PWA on the same origin,
+and it is not a public contract (FR-401). It sends no CORS headers, so
+browsers block other sites from reading its responses. There is no
+published OpenAPI document. This page is for people working on Tallyup.
 
-The API is open. Any origin may call it (`Access-Control-Allow-Origin: *`),
-and no account or API key is needed. The only credential is a share's
-**edit token**.
+Base URL: `https://<host>/v1`. JSON in, JSON out. Credentials:
 
-## 1. Encryption scheme (what a client must implement)
+- **Client pass** (`X-Tallyup-Pass`): proves a browser passed the
+  Turnstile check. Required to create a share or a claim.
+- **Edit token** (`Authorization: Bearer`): proves you are the host.
+  Required to update or delete.
 
-The server stores what you send and never decrypts it. To interoperate with
-the Tallyup PWA, a client MUST:
+## 1. Encryption scheme
+
+The server stores what it receives and never decrypts it. The PWA's
+`web/src/lib/crypto.ts` implements this:
 
 | Part | Specification |
 |---|---|
@@ -26,12 +30,27 @@ the Tallyup PWA, a client MUST:
 Keys and edit tokens belong in the fragment, never in a path or query
 string that a server or proxy could log.
 
-A reference implementation is `web/src/lib/crypto.ts` (about 50 lines). It
-runs unchanged in browsers, Node 20+, Deno and Workers.
-
 ## 2. Endpoints
 
-### `POST /shares`: create
+### `POST /pass`: get a client pass
+
+Body: `{ "token": "<Turnstile token>" }`. The server checks the token with
+Turnstile's siteverify (each token works once and lasts 5 minutes), then
+returns:
+
+```json
+{ "pass": "<id>.<expiresAt>.<signature>", "expiresAt": "2026-10-06T07:27:00.000Z" }
+```
+
+The pass is valid for 24 hours. The PWA keeps it in `localStorage` and
+sends it as `X-Tallyup-Pass` on both POSTs below. It is signed with
+`PASS_SECRET` and checked without touching the database.
+
+Errors: `403 CHALLENGE_FAILED` if Turnstile says no, or if siteverify
+can't be reached (the check fails closed). Limited to 300 per address per
+hour.
+
+### `POST /shares`: create (client pass)
 
 Body (unknown fields are rejected):
 
@@ -46,8 +65,9 @@ Body (unknown fields are rejected):
 ```
 
 The edit token is returned **only here**. The server keeps a hash of it.
-Limited to 30 per address per hour. Answers `503 AT_CAPACITY` when the
-database is near its size cap; existing shares keep working.
+`401 PASS_REQUIRED` without a valid pass; the PWA then runs the check
+again and retries once. Answers `503 AT_CAPACITY` when the database is
+near its size cap; existing shares keep working.
 
 ### `GET /shares/{id}`: read
 
@@ -73,12 +93,12 @@ expiry moves to 30 days from now.
 
 `204`. Claims are deleted with the share.
 
-### `POST /shares/{id}/claims`: add a claim
+### `POST /shares/{id}/claims`: add a claim (client pass)
 
-Body: `{ ciphertext (≤ 2000), iv }`. Anyone holding the share id may
-claim, because claims change nothing until the host confirms one.
+Body: `{ ciphertext (≤ 2000), iv }`. Anyone holding the share id and a
+pass may claim, because claims change nothing until the host confirms one.
 Responses: `201 { id, createdAt }`, `409 CLAIM_LIMIT` once 50 claims are
-waiting. Limited to 20 per address per hour.
+waiting.
 
 ### `DELETE /shares/{id}/claims/{claimId}`: remove a claim (edit token)
 
@@ -98,18 +118,23 @@ Declining a claim is step 4 alone.
 
 ## 3. Rate limits
 
-Per client address (IPv4, or the /64 prefix of an IPv6 address), per hour:
+Per hour. "Per pass" means per verified browser, so people sharing one
+network don't share one limit. "Per address" means per IPv4 address, or
+per /64 prefix of an IPv6 address.
 
-| Requests | Limit |
-|---|---|
-| `POST /shares` | 30 |
-| `POST /shares/{id}/claims` | 20 |
-| `PUT` and `DELETE` | 120 |
-| `GET` | not limited |
+| Requests | Per pass | Per address (backstop) |
+|---|---|---|
+| `POST /pass` | — | 300 |
+| `POST /shares` | 30 | 120 |
+| `POST /shares/{id}/claims` | 20 | 120 |
+| `PUT` and `DELETE` | — | 120 |
+| `GET` | not limited | not limited |
 
 A request over the limit gets `429 RATE_LIMITED` with `Retry-After` in
-seconds. Reads are not limited because each check costs a database write,
-and the free daily write budget is shared by the whole app (Architecture §3).
+seconds. Reads are not limited in the app, because each check costs a
+database write and the free daily write budget is shared by the whole app
+(Architecture §3). Read floods are stopped at the edge instead
+(Deployment §9).
 
 ## 4. Errors
 
@@ -123,7 +148,9 @@ One envelope, always:
 |---|---|---|
 | `VALIDATION_ERROR` | 422 | Bad JSON, unknown field, malformed id, iv or ciphertext, or ciphertext over the cap. |
 | `UNAUTHENTICATED` | 401 | Edit token missing. |
+| `PASS_REQUIRED` | 401 | Client pass missing, expired or forged. |
 | `FORBIDDEN` | 403 | Edit token wrong. |
+| `CHALLENGE_FAILED` | 403 | Turnstile rejected the token, or siteverify was unreachable. |
 | `NOT_FOUND` | 404 | Unknown or expired share, unknown claim, unknown endpoint. |
 | `VERSION_CONFLICT` | 409 | Stale `version` on update. |
 | `CLAIM_LIMIT` | 409 | 50 unanswered claims already waiting. |
@@ -136,15 +163,17 @@ Responses that do **not** carry this envelope come from the platform, not
 the app: typically the free daily request limit is used up. Treat them as
 "try again later".
 
-## 5. A full flow with curl
+## 5. Trying it locally with curl
 
-The server never decrypts anything, so a curl walkthrough shows the
-transport only. `node` does the encryption here, using the same scheme as
-§1.
+Locally, `.dev.vars` holds Cloudflare's always-pass Turnstile test secret,
+so the documented dummy token `XXXX.DUMMY.TOKEN.XXXX` buys a pass. A
+production secret rejects it. `node` does the encryption, using the scheme
+in §1 without compression (readers accept both).
 
 ```bash
 BASE=http://localhost:8787/v1
 KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
+field() { node -pe "JSON.parse(require('fs').readFileSync(0)).$1"; }
 
 seal() {  # seal '<json>' -> {"ciphertext":..,"iv":..}
   node -e '
@@ -155,27 +184,25 @@ seal() {  # seal '<json>' -> {"ciphertext":..,"iv":..}
   ' "$KEY" "$1"
 }
 
+PASS=$(curl -s -X POST $BASE/pass -H 'Content-Type: application/json' \
+  -d '{"token":"XXXX.DUMMY.TOKEN.XXXX"}' | field pass)
+
 DOC='{"v":1,"title":"Lunch","currency":"IDR","createdAt":0,
       "people":[{"id":"ana","name":"Ana"},{"id":"budi","name":"Budi"}],
       "bills":[{"id":"b1","name":"Warung","paidBy":"ana","tax":0,"service":0,"discount":0,
                 "items":[{"name":"Nasi","price":50000,"qty":2,"for":[]}]}],
       "settlements":[]}'
 
-# 1. Create. Keep the edit token.
-SHARE=$(curl -s -X POST $BASE/shares -H 'Content-Type: application/json' -d "$(seal "$DOC")")
-ID=$(echo "$SHARE" | jq -r .id); TOKEN=$(echo "$SHARE" | jq -r .editToken)
+SHARE=$(curl -s -X POST $BASE/shares -H 'Content-Type: application/json' \
+  -H "X-Tallyup-Pass: $PASS" -d "$(seal "$DOC")")
+ID=$(echo "$SHARE" | field id); TOKEN=$(echo "$SHARE" | field editToken)
 echo "View link: http://localhost:8787/#/s/$ID/$KEY"
 
-# 2. Budi claims a payment.
 curl -s -X POST $BASE/shares/$ID/claims -H 'Content-Type: application/json' \
-  -d "$(seal '{"from":"budi","to":"ana","amount":50000,"at":0}')"
+  -H "X-Tallyup-Pass: $PASS" -d "$(seal '{"from":"budi","to":"ana","amount":50000,"at":0}')"
 
-# 3. Anyone with the id can read the ciphertext. Only the key opens it.
-curl -s $BASE/shares/$ID | jq '{version, expiresAt}'
-
-# 4. Delete with the edit token.
 curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $BASE/shares/$ID -H "Authorization: Bearer $TOKEN"
 ```
 
-Open the view link from step 1 in a browser and the PWA decrypts and
-renders the event you created from the shell.
+Open the view link before the last line runs, and the PWA decrypts the
+event, with Budi's pending claim.

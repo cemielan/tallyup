@@ -29,6 +29,12 @@ export function initials(name: string): string {
   return (words.length === 1 ? words[0].slice(0, 2) : words[0][0] + words[1][0]).toUpperCase();
 }
 
+/**
+ * "•••• 7890". The receipt is what gets screenshotted and forwarded, so it
+ * never shows a full account number; the payer's own card reveals it on tap.
+ */
+export const maskAccount = (number: string) => `•••• ${number.slice(-4)}`;
+
 export async function copyText(text: string, what = 'Copied') {
   try {
     await navigator.clipboard.writeText(text);

@@ -2,11 +2,10 @@ import { drizzle } from 'drizzle-orm/d1';
 import { inArray, lt } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { ApiError } from './errors';
 import { RATE_LIMITS, rateLimit, withDb } from './middleware';
-import { docsPage, openApiDocument } from './openapi';
+import passRoutes from './routes/pass';
 import shareRoutes from './routes/shares';
 import * as schema from './schema';
 import type { AppEnv, Bindings } from './types';
@@ -15,22 +14,9 @@ const app = new Hono<AppEnv>();
 
 app.use('*', secureHeaders());
 
-/**
- * Any origin may call the API (FR-401). That is safe here because nothing
- * about a request is ambient: there are no cookies, and the only credential
- * -- an edit token -- has to be attached explicitly by code that already
- * holds it. Another site's page gains nothing it could not get with curl
- * (docs/05-SECURITY.md §5).
- */
-app.use(
-  '/v1/*',
-  cors({
-    origin: '*',
-    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Authorization', 'Content-Type'],
-    maxAge: 86400,
-  }),
-);
+// No CORS middleware, on purpose: the API serves only the PWA on this same
+// origin (FR-401). Without CORS headers, browsers refuse to let another
+// site's page read the responses (docs/05-SECURITY.md §5).
 
 /**
  * 64 KiB comfortably fits the largest legal body (a share at its ciphertext
@@ -49,8 +35,7 @@ app.use(
 app.use('*', withDb);
 
 app.get('/health', (c) => c.json({ status: 'ok', environment: c.env.ENVIRONMENT }));
-app.get('/v1/openapi.json', (c) => c.json(openApiDocument(new URL('/v1', c.req.url).toString())));
-app.get('/docs', (c) => c.html(docsPage('/v1/openapi.json')));
+app.route('/v1/pass', passRoutes);
 
 // Updates and deletes only. Reads are not limited (see RATE_LIMITS), and the
 // two POSTs carry their own, stricter limits; stacking this one on them would

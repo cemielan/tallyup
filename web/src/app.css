@@ -306,6 +306,14 @@ dialog::backdrop {
   backdrop-filter: blur(3px);
 }
 
+.turnstile-box {
+  position: fixed;
+  left: 50%;
+  bottom: calc(90px + env(safe-area-inset-bottom));
+  z-index: 70;
+  transform: translateX(-50%);
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

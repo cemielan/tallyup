@@ -2,7 +2,7 @@ import { and, count, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { newEditToken, newShareId, sha256Hex } from '../crypto';
 import { ApiError, errors } from '../errors';
-import { RATE_LIMITS, loadShare, rateLimit, requireEditToken } from '../middleware';
+import { RATE_LIMITS, loadShare, rateLimit, requireEditToken, requirePass } from '../middleware';
 import * as schema from '../schema';
 import type { AppEnv } from '../types';
 import {
@@ -38,7 +38,7 @@ async function assertCapacity(db: D1Database, softLimitMb: string) {
   }
 }
 
-shares.post('/', rateLimit(RATE_LIMITS.create), async (c) => {
+shares.post('/', requirePass, rateLimit(RATE_LIMITS.create), rateLimit(RATE_LIMITS.createBackstop), async (c) => {
   const body = await parseBody(c, createShareSchema);
   await assertCapacity(c.env.DB, c.env.DB_SOFT_LIMIT_MB);
   const id = newShareId();
@@ -140,7 +140,7 @@ shares.delete('/:shareId', requireEditToken, async (c) => {
   return c.body(null, 204);
 });
 
-shares.post('/:shareId/claims', rateLimit(RATE_LIMITS.claim), async (c) => {
+shares.post('/:shareId/claims', requirePass, rateLimit(RATE_LIMITS.claim), rateLimit(RATE_LIMITS.claimBackstop), async (c) => {
   const body = await parseBody(c, createClaimSchema);
   const db = c.get('db');
   const shareId = c.get('share').id;

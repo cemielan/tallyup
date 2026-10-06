@@ -9,3 +9,4 @@ backup-*.sql
 coverage/
 
 web/public/ocr/
+!.dev.vars.example

@@ -91,3 +91,13 @@ export function summarize(doc: EventDoc): Summary {
 
   return { bills, grandTotal, consumed, balances, transfers, settled: grandTotal > 0 && transfers.length === 0 };
 }
+
+/**
+ * The same event without bank details, once nobody owes anything; otherwise
+ * undefined. An account number is only needed while a debt is open, and
+ * every link holder can read it for as long as it stays in the document.
+ */
+export function withoutBankDetailsIfSettled(doc: EventDoc): EventDoc | undefined {
+  if (!doc.people.some((p) => p.payment) || !summarize(doc).settled) return undefined;
+  return { ...doc, people: doc.people.map((p) => ({ id: p.id, name: p.name })) };
+}

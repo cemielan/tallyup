@@ -4,6 +4,7 @@
   import type { EventDoc } from '../lib/doc';
   import { rupiah } from '../lib/money';
   import { lineTotal, type Summary } from '../lib/split';
+  import { maskAccount } from '../lib/ui.svelte';
 
   let {
     doc,
@@ -129,7 +130,7 @@
         {#each payTo as p (p.id)}
           <div class="pay">
             <strong>{p.name}</strong> · {p.payment?.bankName}<br />
-            <span class="acct">{p.payment?.accountNumber}</span>
+            <span class="acct">{maskAccount(p.payment?.accountNumber ?? '')}</span>
             {#if p.payment?.accountHolder}<br /><span class="dim">a.n. {p.payment.accountHolder}</span>{/if}
           </div>
         {/each}

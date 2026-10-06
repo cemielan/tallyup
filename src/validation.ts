@@ -50,6 +50,9 @@ export const updateShareSchema = z.strictObject({
   version: z.number().int().positive(),
 });
 
+/** Turnstile tokens are at most 2,048 characters. */
+export const passRequestSchema = z.strictObject({ token: z.string().min(1).max(2048) });
+
 export const createClaimSchema = z.strictObject({
   ciphertext: ciphertext(MAX_CLAIM_CIPHERTEXT),
   iv: ivSchema,

@@ -10,13 +10,13 @@ there is a recorded reason not to, and `MAY` is optional.
 | ID | Requirement | Priority |
 |---|---|---|
 | FR-101 | A visitor MUST be able to create an event (a title and at least one person) without an account. | MUST |
-| FR-102 | An event MUST support up to 30 people. Each person MAY carry payment details: bank name, account number (digits only) and an optional account holder name. The holder name is shown only when it is set. | MUST |
+| FR-102 | An event MUST support up to 30 people. Each person MAY carry payment details: bank name, account number (digits only) and an optional account holder name. The holder name is shown only when it is set. The receipt MUST mask account numbers to the last four digits, and bank details MUST be removed once everyone has paid. | MUST |
 | FR-103 | An event MUST support up to 10 bills. Each bill has a payer, items (name, unit price, quantity, who shared it; nobody selected means everyone), and tax, service and discount amounts as printed. | MUST |
 | FR-104 | Publishing MUST encrypt the event in the browser, upload only the ciphertext, and give the host a **view link** (to share) and a **host link** (to keep). | MUST |
 | FR-105 | The host MUST be able to edit and republish. Concurrent saves MUST NOT silently overwrite each other (compare-and-swap on a version). | MUST |
 | FR-106 | A share MUST expire 30 days after its last update. Expired shares MUST read as missing immediately and MUST be deleted by a daily sweep. | MUST |
 | FR-107 | The host MUST be able to reset the share link (re-encrypt under a new key, invalidating old links) and to delete the event. | MUST |
-| FR-108 | The host's event list MUST be kept on their device. The app MUST offer the host link as a backup, because losing local storage otherwise loses edit access. | MUST |
+| FR-108 | The host's event list MUST be kept on their device. The app MUST offer the host link as a backup, because losing local storage otherwise loses edit access. On a shared computer, the host MUST be able to publish without anything being remembered, and anyone MUST be able to forget an event on the device. | MUST |
 
 ### Receipt scanning
 
@@ -37,12 +37,12 @@ there is a recorded reason not to, and `MAY` is optional.
 | FR-305 | The host MUST be able to confirm a claim (recording the payment in the event) or decline it. The host MAY also mark a payment directly, and undo one. A viewer can never mark their own debt paid. | MUST |
 | FR-306 | Multi-currency events MAY be added later. Until then, events are IDR only, in whole rupiah. | MAY |
 
-### Open API
+### API scope
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-401 | The shares API MUST accept calls from any origin and MUST publish an OpenAPI document (`/v1/openapi.json`) with an interactive reference (`/docs`). | MUST |
-| FR-402 | The event document format and the encryption scheme MUST be documented well enough for a third-party client to interoperate with the PWA (`docs/04-API-SPEC.md`). | MUST |
+| FR-401 | The API MUST serve only the Tallyup PWA on the same origin. It MUST NOT send CORS headers or publish a public contract. The public-API plan was cancelled on 2026-10-05: an open API would share the free daily budget with outside apps and complicate abuse protection. | MUST |
+| FR-402 | Creating an event and sending a claim MUST require a client pass, issued after a Cloudflare Turnstile check (`docs/05-SECURITY.md` §3). | MUST |
 
 ### The `debt-simplify` library
 
@@ -67,7 +67,7 @@ there is a recorded reason not to, and `MAY` is optional.
 |---|---|---|
 | NFR-101 | The server MUST NOT receive plaintext event data, keys or receipt images, by any route: requests, logs, or Referer headers. | MUST |
 | NFR-102 | Every `MUST` in `docs/05-SECURITY.md` blocks phase completion. | MUST |
-| NFR-103 | No secret may be committed. The Worker holds none. | MUST |
+| NFR-103 | No secret may be committed. The Worker's secrets (`TURNSTILE_SECRET`, `PASS_SECRET`) guard against abuse only and cannot read user data. | MUST |
 
 ### Performance
 
@@ -81,7 +81,7 @@ there is a recorded reason not to, and `MAY` is optional.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| NFR-301 | The OpenAPI document MUST be generated from the same Zod schemas the routes validate with. | MUST |
+| NFR-301 | Every API body MUST be validated by a Zod schema, with unknown fields rejected. | MUST |
 | NFR-302 | Every error response MUST use the single JSON envelope in `docs/04-API-SPEC.md` §4. | MUST |
 | NFR-303 | A new developer MUST get from `git clone` to a running local instance in under 10 minutes using `docs/06-DEPLOYMENT.md`. | MUST |
 | NFR-401 | The deployed system MUST cost $0/month at the traffic in `docs/02-ARCHITECTURE.md` §3. | MUST |
@@ -93,7 +93,7 @@ there is a recorded reason not to, and `MAY` is optional.
 | ID | Requirement | Priority |
 |---|---|---|
 | NFR-501 | Coverage of `src/` and `packages/` MUST stay above 80% (statements, branches, functions, lines). | MUST |
-| NFR-502 | Every API route MUST have a happy-path test and an authorization-failure test, where it requires authorization. | MUST |
+| NFR-502 | Every API route MUST have a happy-path test and an authorization-failure test (edit token or client pass), where it requires authorization. | MUST |
 | NFR-503 | Dependabot MUST be enabled. | MUST |
 | NFR-601 | Every control MUST have an accessible name. Focus MUST be visible. Touch targets MUST be at least 34 px (44 px for primary actions). | MUST |
 

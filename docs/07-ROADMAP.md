@@ -28,7 +28,7 @@ It remains in git history before the revamp commit. The arithmetic library,
 - [x] Edit token hashed at rest. Per-IP rate limits. Ciphertext and claim
       caps. 64 KiB body limit with the error envelope.
 - [x] 30-day expiry honoured on read. Daily cron sweep.
-- [x] CORS open to any origin. OpenAPI generated from Zod.
+- [x] ~~CORS open to any origin. OpenAPI generated from Zod.~~ Reverted in R7.
 - [x] Integration tests in the Workers runtime cover every route, its
       authorization failures, conflicts, expiry and the sweep.
 
@@ -66,14 +66,11 @@ It remains in git history before the revamp commit. The arithmetic library,
       ten or more, record the hit rate, and tune `receipt-parser.ts` from
       the failures.
 
-## R5: Public API
+## R5: Public API (cancelled 2026-10-05)
 
-- [x] The encryption scheme and document format are specified in
-      `docs/04-API-SPEC.md` §1. A curl + Node walkthrough creates an event
-      that the PWA opens.
-- [ ] A small published client helper (`seal` / `open` + types), so
-      third parties do not copy `crypto.ts` by hand. Build it when a
-      second client actually exists.
+An open API would share the free daily budget with outside apps, and its
+abuse protection would need API keys and per-key quotas. The API now serves
+only the PWA (FR-401).
 
 ## R6: Ready for public traffic
 
@@ -87,6 +84,23 @@ It remains in git history before the revamp commit. The arithmetic library,
       lost.
 - [ ] After launch: watch D1 rows written per day for a week, and decide on
       Workers Paid using the triggers in Architecture §3.
+
+## R7: Abuse and privacy hardening
+
+- [x] Public API removed: no CORS headers, no OpenAPI or `/docs`.
+- [x] Turnstile client pass on create and claim. Limits count per pass,
+      with a per-address backstop. Fails closed.
+- [x] Blocked requests and failed checks logged by scope, without
+      addresses.
+- [x] Account numbers masked on the receipt, revealed on the payer's
+      card. Bank details removed automatically once settled.
+- [x] Shared-computer mode, and "Forget on this device".
+- [x] The service worker no longer touches third-party requests. It had
+      been breaking the Turnstile script load.
+- [x] Database created near users (`--location=apac`).
+- [ ] Edge protection on a custom domain: WAF rate-limiting rule, Bot
+      Fight Mode, `workers_dev = false` (Deployment §9). Dashboard work;
+      do it before a wide launch.
 
 ## Open items
 

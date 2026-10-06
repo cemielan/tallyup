@@ -1,7 +1,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { createMiddleware } from 'hono/factory';
-import { sha256Hex } from './crypto';
+import { sha256Hex, verifyPass } from './crypto';
 import { ApiError, errors } from './errors';
 import * as schema from './schema';
 import type { AppEnv } from './types';
@@ -18,23 +18,33 @@ interface RateLimitRule {
   scope: string;
   limit: number;
   windowSeconds: number;
+  /** Count per client address, or per verified client pass (`requirePass` must run first). */
+  by: 'address' | 'pass';
 }
 
 /**
- * The limits from docs/05-SECURITY.md §3. There are no accounts, so every
- * limit is per client address.
+ * The limits from docs/05-SECURITY.md §3, all per hour.
+ *
+ * Creates and claims are counted per **client pass**: a browser that passed
+ * a Turnstile check. That way a campus network or a mobile carrier sharing
+ * one address does not make strangers share one limit. Each also has a
+ * looser per-address backstop, so one address cannot mint passes and burn
+ * the budget at scale.
  *
  * Only writes are limited. Each check is itself a D1 write, and D1 Free
  * allows 100,000 rows written per day across the whole app
  * (docs/02-ARCHITECTURE.md §3). Limiting reads would spend that budget on
  * the most common request, and would not save the Worker request budget
- * anyway, because a 429 still counts as a request. `write` is sized so one
- * address cannot exhaust the daily write budget on its own.
+ * anyway, because a 429 still counts as a request.
  */
+const HOUR = 60 * 60;
 export const RATE_LIMITS = {
-  write: { scope: 'write', limit: 120, windowSeconds: 60 * 60 },
-  create: { scope: 'create', limit: 30, windowSeconds: 60 * 60 },
-  claim: { scope: 'claim', limit: 20, windowSeconds: 60 * 60 },
+  pass: { scope: 'pass', limit: 300, windowSeconds: HOUR, by: 'address' },
+  create: { scope: 'create', limit: 30, windowSeconds: HOUR, by: 'pass' },
+  createBackstop: { scope: 'create-ip', limit: 120, windowSeconds: HOUR, by: 'address' },
+  claim: { scope: 'claim', limit: 20, windowSeconds: HOUR, by: 'pass' },
+  claimBackstop: { scope: 'claim-ip', limit: 120, windowSeconds: HOUR, by: 'address' },
+  write: { scope: 'write', limit: 120, windowSeconds: HOUR, by: 'address' },
 } as const satisfies Record<string, RateLimitRule>;
 
 /**
@@ -42,10 +52,6 @@ export const RATE_LIMITS = {
  * IPv6 is keyed by its /64 prefix, because one host routinely owns a whole
  * /64 and could otherwise rotate through 2^64 fresh addresses to reset its
  * limit.
- *
- * ponytail: per-address limits treat everyone behind one NAT (a campus or
- * office network) as a single client. If that starts blocking real users,
- * key creates on a Turnstile-verified client instead (Security §3).
  */
 export function clientKey(ip: string | undefined): string {
   if (!ip) return 'unknown';
@@ -75,7 +81,7 @@ export function clientKey(ip: string | undefined): string {
  */
 export function rateLimit(rule: RateLimitRule) {
   return createMiddleware<AppEnv>(async (c, next) => {
-    const subject = clientKey(c.req.header('cf-connecting-ip'));
+    const subject = rule.by === 'pass' ? c.get('passId') : clientKey(c.req.header('cf-connecting-ip'));
     const now = Date.now();
     const windowMs = rule.windowSeconds * 1000;
     const windowStart = Math.floor(now / windowMs) * windowMs;
@@ -92,6 +98,9 @@ export function rateLimit(rule: RateLimitRule) {
       .returning({ count: schema.rateLimits.count });
 
     if (row && row.count > rule.limit) {
+      // Logged without the subject: an address is personal data, and the
+      // scope alone says which limit real traffic is hitting.
+      console.warn(JSON.stringify({ event: 'rate_limited', scope: rule.scope }));
       const retryAfter = Math.max(1, Math.ceil((expiresAt - now) / 1000));
       throw new ApiError('RATE_LIMITED', 'Too many requests. Try again later.', {
         headers: { 'Retry-After': String(retryAfter) },
@@ -101,6 +110,19 @@ export function rateLimit(rule: RateLimitRule) {
     await next();
   });
 }
+
+/**
+ * A valid client pass in `X-Tallyup-Pass`, issued by POST /v1/pass after a
+ * Turnstile check. Guards the two anonymous writes: creating a share and
+ * adding a claim.
+ */
+export const requirePass = createMiddleware<AppEnv>(async (c, next) => {
+  const pass = c.req.header('X-Tallyup-Pass');
+  const passId = pass ? await verifyPass(c.env.PASS_SECRET, pass) : undefined;
+  if (!passId) throw new ApiError('PASS_REQUIRED', 'Verify this browser first (POST /v1/pass)');
+  c.set('passId', passId);
+  await next();
+});
 
 /**
  * Load the share named in the path, treating an expired one exactly like a

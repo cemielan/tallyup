@@ -63,7 +63,7 @@
 
   <p class="muted small center">
     🔒 Events are encrypted on your device before they are saved. Our server can't read them. Links expire 30 days
-    after the last edit. · <a href="/docs">Open API</a>
+    after the last edit.
   </p>
 </main>
 

@@ -1,9 +1,9 @@
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sweepExpired } from '../src/index';
 import { RATE_LIMITS, clientKey } from '../src/middleware';
 import { MAX_CLAIMS_PER_SHARE, MAX_SHARE_CIPHERTEXT } from '../src/validation';
-import { api, createShare, expectError, json, nextIp, sealed } from './helpers';
+import { api, createShare, expectError, json, mintPass, nextIp, sealed } from './helpers';
 
 describe('POST /v1/shares', () => {
   it('stores ciphertext and returns an edit token exactly once', async () => {
@@ -65,14 +65,42 @@ describe('POST /v1/shares', () => {
     await expectError(await api('/v1/shares', { body: '{nope' }), 422, 'VALIDATION_ERROR');
   });
 
-  it('rate-limits creation per IP with Retry-After', async () => {
-    const ip = nextIp();
+  it('limits creation per client pass, whatever address it comes from', async () => {
+    const pass = await mintPass();
     for (let i = 0; i < RATE_LIMITS.create.limit; i += 1) {
-      await json(await api('/v1/shares', { body: sealed(), ip }), 201);
+      await json(await api('/v1/shares', { body: sealed(), pass }), 201);
     }
-    const blocked = await api('/v1/shares', { body: sealed(), ip });
+    const blocked = await api('/v1/shares', { body: sealed(), pass });
     expect(Number(blocked.headers.get('Retry-After'))).toBeGreaterThan(0);
     await expectError(blocked, 429, 'RATE_LIMITED');
+  });
+
+  it('does not make strangers on one shared address share that limit', async () => {
+    const ip = nextIp();
+    for (let i = 0; i < RATE_LIMITS.create.limit + 5; i += 1) {
+      await json(await api('/v1/shares', { body: sealed(), ip }), 201);
+    }
+  });
+
+  it('still caps one address that mints many passes', async () => {
+    const ip = nextIp();
+    for (let i = 0; i < RATE_LIMITS.createBackstop.limit; i += 1) {
+      await json(await api('/v1/shares', { body: sealed(), ip }), 201);
+    }
+    await expectError(await api('/v1/shares', { body: sealed(), ip }), 429, 'RATE_LIMITED');
+  }, 30_000);
+
+  it('requires a client pass', async () => {
+    await expectError(await api('/v1/shares', { body: sealed(), pass: false }), 401, 'PASS_REQUIRED');
+  });
+
+  it('rejects an expired or forged pass', async () => {
+    const expired = await mintPass(Date.now() - 1);
+    await expectError(await api('/v1/shares', { body: sealed(), pass: expired }), 401, 'PASS_REQUIRED');
+    const valid = await mintPass();
+    const forged = `${valid.slice(0, -2)}${valid.endsWith('AA') ? 'BB' : 'AA'}`;
+    await expectError(await api('/v1/shares', { body: sealed(), pass: forged }), 401, 'PASS_REQUIRED');
+    await expectError(await api('/v1/shares', { body: sealed(), pass: 'nonsense' }), 401, 'PASS_REQUIRED');
   });
 });
 
@@ -93,10 +121,10 @@ describe('GET /v1/shares/:id', () => {
     await expectError(await api(`/v1/shares/${share.id}`), 404, 'NOT_FOUND');
   });
 
-  it('allows any origin, since no credential is ambient', async () => {
+  it('sends no CORS headers, so other sites cannot read responses', async () => {
     const share = await createShare();
     const response = await api(`/v1/shares/${share.id}`);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
   });
 });
 
@@ -284,14 +312,8 @@ describe('sweepExpired', () => {
 });
 
 describe('meta', () => {
-  it('serves the OpenAPI document for the shares API', async () => {
-    const doc = await json(await api('/v1/openapi.json'));
-    expect(Object.keys(doc.paths)).toEqual([
-      '/shares',
-      '/shares/{shareId}',
-      '/shares/{shareId}/claims',
-      '/shares/{shareId}/claims/{claimId}',
-    ]);
+  it('publishes no API reference', async () => {
+    await expectError(await api('/v1/openapi.json'), 404, 'NOT_FOUND');
   });
 
   it('uses the error envelope for unknown endpoints', async () => {
@@ -333,7 +355,11 @@ describe('free-tier budget', () => {
     const { default: worker } = await import('../src/index');
     const request = new Request('https://tallyup.test/v1/shares', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': nextIp() },
+      headers: {
+        'Content-Type': 'application/json',
+        'cf-connecting-ip': nextIp(),
+        'X-Tallyup-Pass': await mintPass(),
+      },
       body: JSON.stringify(sealed()),
     });
     const ctx = createExecutionContext();
@@ -360,5 +386,44 @@ describe('clientKey', () => {
 
   it('has a key for a request with no address', () => {
     expect(clientKey(undefined)).toBe('unknown');
+  });
+});
+
+describe('POST /v1/pass', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** Stand in for Turnstile's siteverify so the suite never touches the network. */
+  function siteverify(outcome: object) {
+    const real = globalThis.fetch;
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (!url.startsWith('https://challenges.cloudflare.com/')) return real(input, init);
+      return Response.json(outcome);
+    });
+  }
+
+  it('exchanges a passing Turnstile token for a day-long pass that works', async () => {
+    const spy = siteverify({ success: true });
+    const issued = await json(await api('/v1/pass', { body: { token: 'XXXX.DUMMY.TOKEN.XXXX' }, pass: false }));
+    expect(Date.parse(issued.expiresAt)).toBeGreaterThan(Date.now() + 23 * 3600 * 1000);
+
+    const sent = JSON.parse(String(spy.mock.calls[0][1]?.body));
+    expect(sent).toMatchObject({ secret: env.TURNSTILE_SECRET, response: 'XXXX.DUMMY.TOKEN.XXXX' });
+
+    await json(await api('/v1/shares', { body: sealed(), pass: issued.pass }), 201);
+  });
+
+  it('refuses a failed check', async () => {
+    siteverify({ success: false, 'error-codes': ['invalid-input-response'] });
+    await expectError(await api('/v1/pass', { body: { token: 'bad' }, pass: false }), 403, 'CHALLENGE_FAILED');
+  });
+
+  it('fails closed when siteverify is unreachable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('network down'));
+    await expectError(await api('/v1/pass', { body: { token: 'x' }, pass: false }), 403, 'CHALLENGE_FAILED');
+  });
+
+  it('validates the body', async () => {
+    await expectError(await api('/v1/pass', { body: { token: '' }, pass: false }), 422, 'VALIDATION_ERROR');
   });
 });

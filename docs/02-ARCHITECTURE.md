@@ -8,7 +8,8 @@
 | HTTP framework | **Hono** | Small, first-class Workers support, built-in CORS, body-limit and secure-header middleware. |
 | Database | **Cloudflare D1** (SQLite) | Bound directly to the Worker. Stores ciphertext, edit-token hashes, claims and rate-limit counters. Nothing relational about the data needs Postgres. |
 | ORM | **Drizzle** | Readable SQL, good D1 support. Generates `migrations/` from `src/schema.ts`. |
-| Validation | **Zod** | Validates API bodies on the server and the decrypted event in the browser. Also the source of the OpenAPI document. |
+| Validation | **Zod** | Validates API bodies on the server and the decrypted event in the browser. |
+| Bot check | **Cloudflare Turnstile** (free) | Gates the two anonymous writes. It is exchanged for a signed 24-hour client pass, so limits can count per browser rather than per shared address. Security §3. |
 | Encryption | **WebCrypto AES-256-GCM**, in the browser | Native, audited, no dependency. See Security §2. |
 | Frontend | **Svelte 5 + Vite**, built to `dist/` and served as **Workers Static Assets** | Svelte's compiler output is small, and its built-in transitions cover most of the motion. Same origin as the API, one deploy, and static requests cost nothing. |
 | PWA | Hand-written `manifest.webmanifest` + `sw.js` (about 50 lines) | A plugin plus Workbox would replace 50 readable lines with a dependency tree. The trade-off is recorded in `sw.js`. |
@@ -28,6 +29,7 @@
  host edits bills, taps who had what
  debt-simplify ─► per-person shares, fewest transfers
  event JSON ─► AES-256-GCM (fresh key) ─► {ciphertext, iv}
+ Turnstile (invisible) ─► POST /v1/pass ──────────────► Worker ─► signed 24 h pass
                                    POST /v1/shares ──────► Worker ─► D1: ciphertext,
                                    ◄── {id, editToken}              sha256(editToken)
  local history: {id, key, editToken}
@@ -109,8 +111,8 @@ things stop until the daily reset:
 | If this happens | Cheapest mitigation |
 |---|---|
 | Daily D1 writes regularly pass ~60,000, or requests pass ~60,000 | **Workers Paid, $5/month.** It raises every daily limit above into monthly allowances many times larger and makes the database cap 10 GB. Check current pricing first. After upgrading, raise `DB_SOFT_LIMIT_MB`. |
-| One campus or office network hits the per-address limits | Key creates on a Turnstile-verified client instead of the IP (Security §3). |
-| Bots fill the database | Cloudflare Turnstile on create (free). It breaks anonymous third-party creates, so pair it with API keys for registered clients. |
+| One campus or office network hits the per-address backstop | Raise `createBackstop` / `claimBackstop` in `src/middleware.ts`. The per-pass limits still hold each browser to its own quota. |
+| Bots fill the database despite Turnstile | Lower the per-pass and per-address create limits, or shorten `PASS_TTL_MS` so each pass buys less. |
 | Rate-limit counters become a large share of D1 writes | Move them to the Workers Rate Limiting binding, which keeps no D1 state. Its availability on the Free plan is not documented, so confirm it first. |
 | An event needs more than Rp 50.000.000 in one bill | Move the library's proportional `distribute` to BigInt (`ponytail:` note in `web/src/lib/doc.ts`). |
 | The service worker cache grows noticeably | Generate a precache list at build time (`ponytail:` note in `web/public/sw.js`). |

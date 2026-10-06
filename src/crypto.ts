@@ -1,6 +1,6 @@
 /**
- * The server's only cryptography: minting random identifiers and hashing
- * edit tokens. Event data is encrypted and decrypted in the browser; this
+ * The server's cryptography: random identifiers, edit-token hashes and
+ * client passes. Event data is encrypted and decrypted in the browser; this
  * Worker never holds a key that could read it (docs/05-SECURITY.md §2).
  */
 
@@ -33,4 +33,31 @@ export async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+/**
+ * Client passes (docs/05-SECURITY.md §3): `<id>.<expiresAt>.<hmac>`, signed
+ * with PASS_SECRET. Stateless on purpose. Issuing or checking one costs no
+ * D1 write, and the daily write budget is the tightest limit this app has.
+ */
+const PASS_PATTERN = /^([A-Za-z0-9_-]{22})\.(\d{13})\.([A-Za-z0-9_-]{43})$/;
+
+function hmacKey(secret: string, usage: 'sign' | 'verify') {
+  return crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, [usage]);
+}
+
+export async function signPass(secret: string, expiresAt: number): Promise<string> {
+  const body = `${randomToken(16)}.${expiresAt}`;
+  const sig = await crypto.subtle.sign('HMAC', await hmacKey(secret, 'sign'), encoder.encode(body));
+  return `${body}.${toBase64Url(new Uint8Array(sig))}`;
+}
+
+/** The pass id if the pass is authentic and unexpired, otherwise undefined. */
+export async function verifyPass(secret: string, pass: string, now = Date.now()): Promise<string | undefined> {
+  const match = PASS_PATTERN.exec(pass);
+  if (!match || Number(match[2]) <= now) return undefined;
+  const sig = Uint8Array.from(atob(match[3].replace(/-/g, '+').replace(/_/g, '/')), (ch) => ch.charCodeAt(0));
+  // `verify` compares in constant time, unlike comparing two strings.
+  const ok = await crypto.subtle.verify('HMAC', await hmacKey(secret, 'verify'), sig, encoder.encode(`${match[1]}.${match[2]}`));
+  return ok ? match[1] : undefined;
 }

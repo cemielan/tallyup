@@ -17,9 +17,6 @@ Two things make it different:
   which browsers never send to a server.
 - **Receipt photos never leave the phone.** OCR runs in the browser.
 
-The sharing API is open. Any client that implements the documented
-encryption scheme can create and read Tallyup events.
-
 **Documentation:** start at [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md), then
 [requirements](docs/01-REQUIREMENTS.md), [architecture](docs/02-ARCHITECTURE.md),
 [data model](docs/03-DATA-MODEL.md), [API spec](docs/04-API-SPEC.md),
@@ -30,8 +27,9 @@ encryption scheme can create and read Tallyup events.
 
 ```bash
 npm install
+cp .dev.vars.example .dev.vars   # local secrets (Turnstile test key, pass signing key)
 npm run db:migrate:local
-npm run dev:api          # builds the PWA, serves app + API at http://localhost:8787
+npm run dev:api                  # builds the PWA, serves app + API at http://localhost:8787
 ```
 
 For UI work with hot reload, also run `npm run dev` (Vite on :5173,
@@ -47,11 +45,8 @@ npm run deploy           # build + wrangler deploy --env production
 Production setup, CI and rollback are in
 [`docs/06-DEPLOYMENT.md`](docs/06-DEPLOYMENT.md).
 
-| URL | What it is |
-|---|---|
-| `/` | The PWA |
-| `/docs` | Interactive API reference |
-| `/v1/openapi.json` | OpenAPI document, generated from the Zod schemas |
+The API under `/v1` serves only the PWA. It is same-origin and not a
+public API.
 
 ## How it works
 
@@ -70,7 +65,10 @@ link:  https://…/#/s/<id>/<key>     the key never reaches the server
   confirms it, which records the payment in the event, or declines it. A
   viewer can never clear their own debt.
 - **Payment details:** each person can optionally show bank name, account
-  number and account holder. Anyone with the link sees them.
+  number and account holder. The receipt shows only the last four digits.
+  The details are deleted once everyone has paid.
+- **Bots:** creating an event or claiming a payment needs a Cloudflare
+  Turnstile check, invisible for almost everyone, once a day per device.
 - **History:** stored on the host's device. The host link (shown once,
   after printing) is the backup.
 - **Expiry:** 30 days after the last edit.
@@ -79,9 +77,10 @@ link:  https://…/#/s/<id>/<key>     the key never reaches the server
 
 ```
 src/                     Cloudflare Worker: Hono API over D1
-  routes/shares.ts       the seven /v1/shares endpoints
-  middleware.ts          rate limits, share loading, edit-token check
-  index.ts               app, CORS, error envelope, daily sweep
+  routes/shares.ts       the /v1/shares endpoints
+  routes/pass.ts         Turnstile check -> signed 24-hour client pass
+  middleware.ts          rate limits, client-pass and edit-token checks, share loading
+  index.ts               app, error envelope, daily sweep
 web/                     the PWA (Svelte 5 + Vite)
   src/lib/               crypto, document schema, split math, OCR, parser, API client
   src/views/             Home, Editor (host), Viewer (guest)
@@ -95,5 +94,5 @@ scripts/copy-ocr.mjs     self-hosts Tesseract's worker, WASM and language data
 ## Stack
 
 Cloudflare Workers + D1 (free tier), Hono, Drizzle, Zod, Svelte 5, Vite,
-Tesseract.js, canvas-confetti and Vitest. The reasoning, and the free-tier
+Tesseract.js, Cloudflare Turnstile, canvas-confetti and Vitest. The reasoning, and the free-tier
 numbers behind it, are in [`docs/02-ARCHITECTURE.md`](docs/02-ARCHITECTURE.md).

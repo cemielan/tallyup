@@ -26,9 +26,9 @@ Both live in a single **event**. Bills create debt and confirmed payments
 reduce it. Balances are always recomputed from those two lists and never
 stored.
 
-The **sharing API is open**. Any client that implements the documented
-encryption scheme can create, read and update events through
-`/v1/shares` (`docs/04-API-SPEC.md`).
+The API exists only to serve the PWA. It is **not a public API**: it
+sends no CORS headers and publishes no contract. A public API was
+considered and cancelled (FR-401).
 
 ## The design decision everything follows from
 
@@ -50,6 +50,9 @@ Consequences that shape the rest of the codebase:
   (Tesseract.js, self-hosted).
 - **The link is the credential.** Anyone holding the view link can read the
   event and add a payment claim. Only the edit token can change it.
+- **Abuse is held off without accounts.** Creating events and claims needs a
+  Cloudflare Turnstile client pass. Writes are rate limited. The edge
+  stops floods (`docs/05-SECURITY.md` §3).
 
 ## Non-goals (explicitly out of scope)
 

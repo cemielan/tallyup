@@ -1,5 +1,6 @@
 import { open, seal, type Sealed } from './crypto';
 import { LIMITS, claimSchema, parseDoc, type Claim, type EventDoc } from './doc';
+import { getPass } from './pass';
 
 /** Thin client for /v1/shares. Everything it sends is ciphertext. */
 
@@ -96,11 +97,27 @@ export async function loadEvent(id: string, key: string): Promise<Loaded> {
   };
 }
 
+/**
+ * A POST that needs a client pass. A pass the server no longer accepts
+ * (expired, or the signing key was rotated) earns one fresh check and one
+ * retry, never a loop.
+ */
+async function withPass<T>(path: string, body: string): Promise<T> {
+  const send = async (fresh: boolean) =>
+    call<T>(path, { method: 'POST', body, headers: { 'X-Tallyup-Pass': await getPass(fresh) } });
+  try {
+    return await send(false);
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'PASS_REQUIRED') return send(true);
+    throw error;
+  }
+}
+
 export async function createEvent(key: string, doc: EventDoc) {
-  return call<{ id: string; editToken: string; version: number; expiresAt: string }>('', {
-    method: 'POST',
-    body: JSON.stringify(checkSize(await seal(key, doc))),
-  });
+  return withPass<{ id: string; editToken: string; version: number; expiresAt: string }>(
+    '',
+    JSON.stringify(checkSize(await seal(key, doc))),
+  );
 }
 
 export async function updateEvent(id: string, key: string, token: string, doc: EventDoc, version: number) {
@@ -114,7 +131,7 @@ export async function updateEvent(id: string, key: string, token: string, doc: E
 export const deleteEvent = (id: string, token: string) => call<void>(`/${id}`, { method: 'DELETE', token });
 
 export async function sendClaim(id: string, key: string, claim: Claim) {
-  return call<{ id: string }>(`/${id}/claims`, { method: 'POST', body: JSON.stringify(await seal(key, claim)) });
+  return withPass<{ id: string }>(`/${id}/claims`, JSON.stringify(await seal(key, claim)));
 }
 
 export const deleteClaim = (id: string, token: string, claimId: string) =>

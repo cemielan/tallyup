@@ -1,0 +1,11 @@
+# Copy to .dev.vars (gitignored) for local development:
+#   cp .dev.vars.example .dev.vars
+#
+# Cloudflare's documented always-pass Turnstile test secret. It pairs with
+# the test sitekey the app uses when VITE_TURNSTILE_SITE_KEY is unset.
+TURNSTILE_SECRET="1x0000000000000000000000000000000AA"
+
+# Signs client passes. Any long random string works locally; production
+# gets its own via `wrangler secret put PASS_SECRET --env production`.
+#   openssl rand -base64 32
+PASS_SECRET="local-dev-only-replace-me-with-openssl-rand-base64-32"

@@ -14,6 +14,10 @@ export default defineConfig({
       miniflare: {
         bindings: {
           ENVIRONMENT: 'test',
+          // Cloudflare's documented always-pass Turnstile test secret, and a
+          // throwaway signing key. Neither is used outside tests.
+          TURNSTILE_SECRET: '1x0000000000000000000000000000000AA',
+          PASS_SECRET: 'test-only-pass-secret-not-used-anywhere-else-0123456789',
           // The real migration files, so the schema under test is the schema
           // that ships -- not a second definition kept in sync by hand.
           TEST_MIGRATIONS: migrations,

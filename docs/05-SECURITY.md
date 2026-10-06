@@ -10,7 +10,8 @@ from the code, so keep them stable.
 | Event contents (names, items, amounts, bank details) | Holders of the view link | End-to-end encryption (§2) |
 | Edit rights | The host, through the host link | Edit token, stored hashed (§2) |
 | Receipt photos | Only the device that took them | On-device OCR, no upload path (FR-201) |
-| Service availability on the free tier | Everyone | Rate limits and size caps (§3, §4) |
+| Bank details | People who still owe the account holder | Masked on the receipt, deleted once everyone has paid (§2) |
+| Service availability on the free tier | Everyone | Edge rules, Turnstile client passes, rate limits, size caps (§3, §4) |
 
 **Out of scope for protection:** someone the link was forwarded to. The
 link *is* the access. Its mitigation is "Reset share link" (FR-107), not
@@ -38,6 +39,18 @@ scrapes share ids.
   password.
 - Share ids are 128 random bits. Even an id that leaked from a log would
   reveal nothing without the key.
+- **Bank details MUST be minimised:**
+  - The receipt, which is what gets screenshotted and forwarded, MUST show
+    only the last four digits.
+  - The full number appears only on the payer's own "You pay …" card,
+    behind a tap.
+  - Once nobody owes anything, the host's next save MUST remove all bank
+    details from the event (`withoutBankDetailsIfSettled`).
+- **Shared computers:**
+  - The host MUST be able to publish without the event being remembered in
+    the browser (no history entry, no draft). The host link is shown open,
+    with a warning to copy it.
+  - Hosts and guests MUST be able to "Forget on this device" at any time.
 - GCM authenticates. A ciphertext tampered in storage or transit fails to
   decrypt, and the app reports a broken link rather than rendering altered
   numbers.
@@ -47,39 +60,64 @@ a forged event. They cannot store it, because `PUT` needs the edit token.
 They can forge a claim, but a claim changes nothing until the host
 confirms it.
 
-## 3. Rate limiting and abuse
+## 3. Abuse and availability
 
-- **Write requests MUST be rate limited** per client address, in fixed
-  hourly windows held in D1:
-  - creates: 30 per hour
-  - claims: 20 per hour
-  - updates and deletes: 120 per hour
+Protection comes in three layers, outermost first.
 
-  A blocked request gets `429` + `Retry-After`. These numbers keep one
-  address well under the app-wide D1 write budget, so a single abuser
-  cannot take the service down for everyone.
-- **IPv6 clients MUST be keyed by their /64 prefix.** One host commonly
-  owns a whole /64, and would otherwise reset its limit by changing
-  address. IPv4-mapped addresses are treated as IPv4.
-- **Reads are not limited.** Each check would cost a D1 write, and the
-  free write budget is shared by the whole app. A 429 still counts against
-  the Worker request budget, so limiting reads would not protect it anyway.
-  Read floods are left to Cloudflare's network-level DDoS protection.
+**1. The edge (Deployment §9).** These run before the Worker, so requests
+they block don't use up the daily request budget. This is the only layer
+that stops a read flood from a single machine.
+
+- A Cloudflare WAF rate-limiting rule on `/v1/*`, counted per IP.
+- Bot Fight Mode.
+- `workers_dev = false`, so the `*.workers.dev` address can't be used to
+  bypass the domain's rules.
+
+These need a custom domain.
+
+**2. Client passes (Turnstile).** Creating an event and sending a claim
+are the anonymous writes. They MUST carry a valid client pass:
+
+- A pass is issued by `POST /v1/pass` after Cloudflare Turnstile verifies
+  the browser. Most people never see a challenge.
+- A pass lasts 24 hours.
+- It is HMAC-signed with `PASS_SECRET` and checked statelessly, so it
+  costs no database write.
+- Issuing one fails closed: if Turnstile's siteverify cannot be reached,
+  there is no pass.
+
+**3. Rate limits** in fixed hourly windows held in D1:
+
+| | Per pass | Per address (backstop) |
+|---|---|---|
+| Passes issued | — | 300 |
+| Creates | 30 | 120 |
+| Claims | 20 | 120 |
+| Updates and deletes | — | 120 |
+
+- Counting per pass means a campus network or a mobile carrier sharing one
+  IPv4 address doesn't make strangers share one limit.
+- The per-address backstop stops one machine from minting passes to
+  multiply its quota.
+- IPv6 addresses MUST be keyed by their /64 prefix, because one host
+  commonly owns a whole /64. IPv4-mapped addresses are treated as IPv4.
+- Reads are not rate limited in the app: each check would cost a D1 write,
+  and a refused request still counts against the request budget.
+- A blocked request gets `429` + `Retry-After`. The Worker logs
+  `rate_limited` with the scope, never the address (Deployment §8).
+
+Also:
+
 - Unanswered claims MUST be capped at 50 per share.
 - Creation MUST stop near the database size cap (`DB_SOFT_LIMIT_MB`), so a
   full database can never break existing events.
 - Shares MUST expire 30 days after the last update. Reads MUST honour
   expiry before the sweep runs.
 
-**What these limits cannot stop:** an attacker with many addresses can
-still use up a free daily budget. The platform caps the damage: there is no
-bill, and service resumes at 00:00 UTC. The escalation path is in
-Architecture §3, "Upgrade triggers": Turnstile on create, then Workers Paid.
-
-**Known cost of per-address limits:** everyone behind one NAT (a campus or
-office network) shares an address, and so shares one limit. Thirty new
-events an hour from a single building is a lot, but it is reachable. Watch
-for `429`s on `POST /shares` after launch.
+**What remains:** an attacker who pays a CAPTCHA-solving service, across
+many addresses, can still use up a free daily budget. The damage stays
+capped: there is no bill, and service resumes at 00:00 UTC. Past that
+point, the answer is Workers Paid with usage alerts (Architecture §3).
 
 ## 4. Input validation
 
@@ -95,20 +133,25 @@ for `429`s on `POST /shares` after launch.
 - The UI renders all user text through Svelte's escaping. No `{@html}`
   is used anywhere.
 
-## 5. CORS
+## 5. Same-origin only
 
-`/v1/*` allows any origin. This is safe because no credential is ambient:
-there are no cookies, and the edit token must be attached explicitly by
-code that already holds it. A hostile page can do nothing through a
-visitor's browser that it could not do with curl.
+The API serves only the PWA on the same origin (FR-401), and sends **no
+CORS headers**. A page on another site can still send a request, but the
+browser won't let it read the response or send the preflighted `PUT` and
+`DELETE`. There is no published API contract and no OpenAPI document.
+
+This is not access control: curl ignores CORS. The Turnstile pass (§3) and
+the edit token (§2) are what actually guard writes.
 
 ## 6. Browser hardening
 
 Static assets carry the headers in `web/public/_headers`:
 
 - `Content-Security-Policy`:
-  - `script-src 'self' 'wasm-unsafe-eval'`. WebAssembly compilation is
-    allowed for OCR; `eval` of JavaScript is not.
+  - `script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com`.
+    WebAssembly compilation is allowed for OCR; `eval` of JavaScript is
+    not. The Turnstile origin is allowed for its script.
+  - `frame-src https://challenges.cloudflare.com`, for Turnstile's widget.
   - `worker-src 'self'`. Tesseract is told not to use blob: workers, and
     canvas-confetti runs without its worker.
   - `connect-src 'self'` plus Google Fonts.
@@ -126,22 +169,33 @@ curl -sI https://<host>/ | grep -i content-security
 
 ## 7. Secrets and dependencies
 
-- The Worker has no secrets: no signing key, no API keys. `.dev.vars` is
-  unused, and still gitignored in case one is added later.
+- The Worker has two secrets, `TURNSTILE_SECRET` and `PASS_SECRET`.
+  Neither can decrypt anything. Leaking them would let someone mint passes
+  (an abuse risk, not a privacy one). Rotating `PASS_SECRET` silently
+  invalidates every pass.
+  - Production: `wrangler secret put`.
+  - Local: `.dev.vars`, gitignored, using Cloudflare's always-pass test
+    secret.
+- The service worker never caches third-party responses other than fonts.
+  A stale copy of a security script would be a bug.
 - Dependabot runs weekly (NFR-503). CI runs `npm audit --omit=dev` and
   reports without failing.
 - Third-party code at runtime: Svelte (MIT), Zod (MIT), Tesseract.js
   (Apache-2.0) with its language data (MIT), and canvas-confetti (ISC).
-  Hono and Drizzle (MIT) run on the server. Google Fonts are the only
-  third-party network fetch, and they reveal nothing about events.
+  Hono and Drizzle (MIT) run on the server.
+- Third-party network fetches: Google Fonts, and Cloudflare Turnstile when
+  creating or claiming. Neither sees any event data.
 
 ## 8. Known limitations
 
 - **Device-local history.** Losing browser storage loses edit access unless
   the host link was saved.
-- **Bank details are visible to every link holder.** The UI says so next to
-  the fields.
-- **Claims are unauthenticated** by design. Spam is bounded by the per-share
-  cap and the per-IP limit, and only the host's confirmation counts.
+- **Bank details are visible to every link holder until everyone has
+  paid.** They are masked on the receipt, but anyone with the link can
+  still open a payer card. Separate links per person would fix this, at
+  the cost of the "send one link" experience; it was rejected.
+- **Claims are honour-system.** Anyone with the link and a pass can claim
+  to be anyone. Spam is bounded by the per-share cap and the rate limits,
+  and only the host's confirmation counts.
 - **No forward secrecy for an event.** Anyone who once had the key can read
   every later version until the host resets the link.
