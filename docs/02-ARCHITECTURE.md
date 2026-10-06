@@ -17,7 +17,7 @@
 | Celebration | **canvas-confetti** (ISC) | One function call. Run without its worker so the CSP stays strict. |
 | Split math | **`debt-simplify`** workspace package | Zero dependencies. Runs in the browser. |
 | Testing | **Vitest**, twice | API tests run inside the real Workers runtime (`@cloudflare/vitest-pool-workers`). The browser logic (split math, parser, crypto, routing) runs under Node. |
-| CI/CD | **GitHub Actions** + `wrangler-action` | Typecheck, build, test with coverage, then migrate and deploy. |
+| CI/CD | **GitHub Actions** + the locked `wrangler` | Typecheck, build, test with coverage, then migrate and deploy. |
 
 ## 2. How a split flows
 
