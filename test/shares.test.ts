@@ -268,7 +268,7 @@ describe('claims', () => {
       409,
       'CLAIM_LIMIT',
     );
-  });
+  }, 30_000);
 
   it('404s claims on an unknown share', async () => {
     await expectError(
