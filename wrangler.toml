@@ -48,7 +48,7 @@ DB_SOFT_LIMIT_MB = "450"
 binding = "DB"
 database_name = "tallyup-db"
 # Run `wrangler d1 create tallyup-db` and paste the returned id here.
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "d3a8edb3-fb64-4b01-ab28-26fbfef166cf"
 migrations_dir = "migrations"
 
 [env.production]
@@ -67,5 +67,5 @@ DB_SOFT_LIMIT_MB = "450"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "tallyup-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "d3a8edb3-fb64-4b01-ab28-26fbfef166cf"
 migrations_dir = "migrations"
