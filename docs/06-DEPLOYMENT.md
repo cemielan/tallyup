@@ -5,7 +5,7 @@ daily limit is used up, the app pauses until 00:00 UTC (07:00 WIB).
 
 ## 1. Prerequisites
 
-- Node.js 20 or newer.
+- Node.js 22 or newer (Wrangler 4 refuses older).
 - A Cloudflare account (free). No payment card is needed.
 - `npx wrangler login` done once on your machine. Check with
   `npx wrangler whoami`.
