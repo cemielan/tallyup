@@ -29,26 +29,26 @@
   "dependencies": {
     "canvas-confetti": "^1.9.4",
     "debt-simplify": "*",
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.7",
+    "drizzle-orm": "^0.45.3",
+    "hono": "^4.13.12",
     "svelte": "^5.57.1",
     "tesseract.js": "^7.0.0",
-    "zod": "^4.6.2"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
-    "@cloudflare/workers-types": "^5.20260911.1",
+    "@cloudflare/workers-types": "^5.20261003.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tesseract.js-data/eng": "^1.0.0",
     "@tesseract.js-data/ind": "^1.0.0",
     "@types/canvas-confetti": "^1.9.0",
     "@vitest/coverage-istanbul": "^4.1.11",
-    "drizzle-kit": "^0.31.10",
+    "drizzle-kit": "^0.31.11",
     "svelte-check": "^4.7.6",
     "typescript": "^5.9.3",
     "vite": "^8.3.2",
     "vitest": "~4.1.11",
-    "wrangler": "^4.131.0"
+    "wrangler": "^4.147.0"
   },
   "engines": {
     "node": ">=22"
