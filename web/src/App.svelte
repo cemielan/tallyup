@@ -52,7 +52,7 @@
 <style>
   .toasts {
     position: fixed;
-    inset: 16px 16px auto;
+    inset: calc(16px + env(safe-area-inset-top)) 16px auto;
     z-index: 50;
     display: grid;
     justify-items: center;

@@ -53,7 +53,7 @@ body {
 main {
   max-width: 600px;
   margin: 0 auto;
-  padding: 16px 16px calc(120px + env(safe-area-inset-bottom));
+  padding: calc(24px + env(safe-area-inset-top)) 16px calc(120px + env(safe-area-inset-bottom));
 }
 
 h1,
@@ -292,7 +292,7 @@ input[type='checkbox'] {
 
 dialog {
   width: min(560px, calc(100vw - 24px));
-  max-height: calc(100dvh - 24px);
+  max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   padding: 0;
   color: var(--ink);
   background: var(--bg);
