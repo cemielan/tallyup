@@ -68,11 +68,15 @@
 </main>
 
 <style>
+  main {
+    gap: 28px;
+  }
+
   .hero {
     display: grid;
     justify-items: center;
-    gap: 12px;
-    padding: 32px 0 8px;
+    gap: 16px;
+    padding: 56px 0 8px;
     text-align: center;
   }
 
@@ -92,11 +96,13 @@
     margin: 0;
     font-size: 1.2rem;
     font-weight: 600;
+    line-height: 1.4;
   }
 
   .cta {
     min-height: 58px;
-    padding: 12px 28px;
+    margin-top: 8px;
+    padding: 12px 32px;
     font-size: 1.2rem;
   }
 
@@ -105,7 +111,7 @@
     grid-template-columns: 1fr auto;
     align-items: center;
     gap: 8px;
-    padding-bottom: 10px;
+    padding-bottom: 14px;
     border-bottom: 2px dashed color-mix(in srgb, var(--ink) 15%, transparent);
   }
 
@@ -116,13 +122,14 @@
 
   .steps {
     display: grid;
-    gap: 14px;
+    gap: 18px;
   }
 
   .step {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 16px;
+    padding: 18px 20px;
     transform: rotate(var(--tilt));
   }
 
@@ -131,6 +138,8 @@
   }
 
   .center {
+    margin: 0;
+    padding: 0 8px;
     text-align: center;
   }
 

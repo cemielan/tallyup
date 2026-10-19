@@ -478,9 +478,9 @@
   }
 
   .person {
-    padding: 12px;
+    padding: 16px;
     border: 2px dashed var(--line);
-    border-radius: 12px;
+    border-radius: 14px;
   }
 
   .bank {
@@ -490,14 +490,14 @@
   .add {
     display: grid;
     grid-template-columns: 1fr auto;
-    gap: 8px;
+    gap: 10px;
   }
 
   .add-bill {
     border-style: dashed;
     box-shadow: none;
     border-radius: var(--radius);
-    min-height: 56px;
+    min-height: 60px;
   }
 
   .transfer {
@@ -535,7 +535,7 @@
   }
 
   .claim {
-    padding-bottom: 10px;
+    padding-bottom: 14px;
     border-bottom: 2px dashed color-mix(in srgb, var(--ink) 20%, transparent);
   }
 
@@ -559,13 +559,15 @@
   }
 
   .shared-device {
-    justify-content: center;
+    gap: 12px;
+    padding: 4px 8px;
     font-size: 0.9rem;
+    line-height: 1.4;
     flex-wrap: nowrap;
   }
 
   .sheet {
-    padding: 16px;
+    padding: 20px;
   }
 
   .sheet-actions {
@@ -574,15 +576,15 @@
     display: grid;
     grid-template-columns: 2fr 1fr;
     gap: 10px;
-    margin: 0 -16px -16px;
-    padding: 24px 16px 16px;
+    margin: 0 -20px -20px;
+    padding: 24px 20px 20px;
     background: linear-gradient(transparent, var(--bg) 30%);
   }
 
   .host-link {
-    padding: 10px 12px;
+    padding: 14px 16px;
     border: 2px dashed var(--line);
-    border-radius: 12px;
+    border-radius: 14px;
   }
 
   @keyframes nudge {

@@ -175,8 +175,8 @@
 
   .item {
     display: grid;
-    gap: 8px;
-    padding: 10px;
+    gap: 10px;
+    padding: 12px;
     border: 2px solid color-mix(in srgb, var(--ink) 15%, transparent);
     border-radius: 12px;
   }
@@ -206,7 +206,7 @@
   }
 
   .who {
-    gap: 6px;
+    gap: 8px;
   }
 
   .chip.mini {
@@ -228,12 +228,12 @@
   .charges {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
+    gap: 10px;
   }
 
   .totals {
     display: grid;
-    gap: 2px;
+    gap: 6px;
     font-family: var(--mono);
   }
 
